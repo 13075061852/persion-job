@@ -961,6 +961,14 @@ button {
   display: none;
 }
 
+.editorToolbar.isDisabled {
+  opacity: 0.45;
+}
+
+.editorToolbar.isDisabled > * {
+  pointer-events: none;
+}
+
 .editorToolbar span {
   width: 1px;
   height: 16px;
@@ -1182,6 +1190,82 @@ button {
   content: attr(data-placeholder);
   color: #888888;
   pointer-events: none;
+}
+
+.messyContent.mergedViewContent {
+  background: transparent;
+}
+
+.mergedWorkflowSection {
+  padding: 8px 10px 10px;
+}
+
+.mergedWorkflowSection + .mergedWorkflowSection {
+  margin-top: 14px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(11, 138, 141, 0.18);
+}
+
+.mergedWorkflowMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #5f6d78;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mergedWorkflowMeta .statusTag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.mergedWorkflowMeta .statusTag.status跟进中 {
+  color: #087678;
+  border: 1px solid rgba(12, 139, 141, 0.44);
+}
+
+.mergedWorkflowMeta .statusTag.status待确认 {
+  color: #b96a17;
+  border: 1px solid rgba(232, 178, 109, 0.68);
+}
+
+.mergedWorkflowMeta .statusTag.status已完成 {
+  color: #24784f;
+  border: 1px solid rgba(133, 199, 164, 0.68);
+}
+
+.mergedWorkflowMeta .statusTag.status暂停 {
+  color: #666666;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+.mergedWorkflowBody {
+  color: #2d3741;
+  min-height: 120px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mergedWorkflowBody > :first-child {
+  margin-top: 0 !important;
+}
+
+.mergedWorkflowBody > :last-child {
+  margin-bottom: 0 !important;
+}
+
+.mergedWorkflowBody > p:empty,
+.mergedWorkflowBody > div:empty {
+  display: none;
 }
 
 .messyContent a {
@@ -1640,6 +1724,13 @@ button {
   margin-bottom: 10px;
 }
 
+.archiveWorkflowHeading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .archiveWorkflowActions {
   display: flex;
   align-items: center;
@@ -1651,6 +1742,33 @@ button {
   color: #111111;
   font-size: 14px;
   font-weight: 850;
+}
+
+.workflowViewSwitch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(14, 165, 164, 0.12);
+}
+
+.workflowViewSwitch button {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #5d6b76;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.workflowViewSwitch button.active {
+  background: #ffffff;
+  color: #0b8a8d;
+  box-shadow: 0 1px 6px rgba(11, 138, 141, 0.16);
 }
 
 .archiveTimeline {
@@ -1781,6 +1899,10 @@ button {
   border: 1px solid rgba(0, 0, 0, 0.22);
   border-radius: 50%;
   background: #ffffff;
+}
+
+.workflowPick input[type="checkbox"] + span {
+  border-radius: 4px;
 }
 
 .workflowPick input:checked + span {

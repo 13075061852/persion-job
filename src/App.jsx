@@ -238,17 +238,25 @@ function readInitialViewState() {
       return {
         selectedId: '',
         selectedWorkflowId: '',
+        selectedWorkflowIds: [],
+        workflowViewMode: 'single',
       };
     }
     const parsed = JSON.parse(stored);
     return {
       selectedId: typeof parsed.selectedId === 'string' ? parsed.selectedId : '',
       selectedWorkflowId: typeof parsed.selectedWorkflowId === 'string' ? parsed.selectedWorkflowId : '',
+      selectedWorkflowIds: Array.isArray(parsed.selectedWorkflowIds)
+        ? parsed.selectedWorkflowIds.filter((item) => typeof item === 'string')
+        : [],
+      workflowViewMode: parsed.workflowViewMode === 'merged' ? 'merged' : 'single',
     };
   } catch {
     return {
       selectedId: '',
       selectedWorkflowId: '',
+      selectedWorkflowIds: [],
+      workflowViewMode: 'single',
     };
   }
 }
@@ -300,6 +308,39 @@ function getPlainTextFromHtml(value = '') {
   return container.textContent ?? '';
 }
 
+function trimWorkflowHtmlEdges(value = '') {
+  const container = document.createElement('div');
+  container.innerHTML = toEditorHtml(value);
+
+  const isEmptyNode = (node) => {
+    if (!node) return true;
+    if (node.nodeType === Node.TEXT_NODE) {
+      return !(node.textContent ?? '').trim();
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return true;
+
+    const element = node;
+    const mediaTags = ['IMG', 'VIDEO', 'IFRAME', 'TABLE', 'UL', 'OL', 'BLOCKQUOTE', 'HR'];
+    if (mediaTags.includes(element.tagName)) return false;
+
+    const text = (element.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+    const hasMedia = element.querySelector('img,video,iframe,table,ul,ol,blockquote,hr');
+    if (hasMedia) return false;
+
+    return !text && !element.children.length;
+  };
+
+  while (container.firstChild && isEmptyNode(container.firstChild)) {
+    container.removeChild(container.firstChild);
+  }
+
+  while (container.lastChild && isEmptyNode(container.lastChild)) {
+    container.removeChild(container.lastChild);
+  }
+
+  return container.innerHTML;
+}
+
 function normalizeEditorUrl(value = '') {
   const url = value.trim();
   if (!url) return '';
@@ -342,6 +383,8 @@ function App() {
   const [globalFieldLabels, setGlobalFieldLabels] = useState(readInitialGlobalFieldLabels);
   const [selectedId, setSelectedId] = useState(() => initialViewState.selectedId || customers[0]?.id || '');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(() => initialViewState.selectedWorkflowId || '');
+  const [selectedWorkflowIds, setSelectedWorkflowIds] = useState(() => initialViewState.selectedWorkflowIds || []);
+  const [workflowViewMode, setWorkflowViewMode] = useState(() => initialViewState.workflowViewMode || 'single');
   const [query, setQuery] = useState('');
   const [gradeFilter, setGradeFilter] = useState('全部');
   const [noteTitleDraft, setNoteTitleDraft] = useState('');
@@ -373,13 +416,38 @@ function App() {
   const archiveCustomer = archiveEditing && archiveDraft?.id === selectedCustomer?.id
     ? archiveDraft
     : selectedCustomer;
-  const selectedWorkflow = selectedCustomer?.timeline?.find((item) => item.id === selectedWorkflowId)
-    ?? selectedCustomer?.timeline?.[0]
+  const selectedCustomerTimeline = selectedCustomer?.timeline ?? [];
+  const focusedWorkflow = selectedCustomer?.timeline?.find((item) => item.id === selectedWorkflowId) ?? null;
+  const selectedWorkflow = focusedWorkflow
+    ?? selectedCustomerTimeline[0]
     ?? null;
-  const editorContent = selectedWorkflow
-    ? selectedWorkflow.documentContent ?? selectedWorkflow.content ?? ''
-    : selectedCustomer?.messyNotes ?? '';
-  const editorKey = selectedWorkflow ? selectedWorkflow.id : selectedCustomer?.id ?? 'empty-editor';
+  const mergedWorkflows = selectedCustomerTimeline.filter((item) => selectedWorkflowIds.includes(item.id));
+  const isMergedWorkflowView = workflowViewMode === 'merged';
+  const activeWorkflowForActions = isMergedWorkflowView
+    ? (focusedWorkflow && selectedWorkflowIds.includes(focusedWorkflow.id) ? focusedWorkflow : null)
+    : selectedWorkflow;
+  const editorContent = isMergedWorkflowView
+    ? mergedWorkflows.map((item) => {
+      const content = trimWorkflowHtmlEdges(item.documentContent ?? item.content ?? '');
+      return [
+        `<section class="mergedWorkflowSection" data-workflow-id="${item.id}">`,
+        `<div class="mergedWorkflowMeta">`,
+        `<span>${escapeHtml(item.date ?? '')}</span>`,
+        `<span>${escapeHtml(item.title ?? item.content ?? '沟通记录')}</span>`,
+        `<span class="statusTag status${item.status}">${escapeHtml(item.status ?? '')}</span>`,
+        `</div>`,
+        `<div class="mergedWorkflowBody">${toEditorHtml(content)}</div>`,
+        `</section>`,
+      ].join('');
+    }).join('')
+    : selectedWorkflow
+      ? selectedWorkflow.documentContent ?? selectedWorkflow.content ?? ''
+      : selectedCustomer?.messyNotes ?? '';
+  const editorKey = isMergedWorkflowView
+    ? `merged:${selectedCustomer?.id ?? 'empty'}:${selectedWorkflowIds.join(',')}`
+    : selectedWorkflow
+      ? selectedWorkflow.id
+      : selectedCustomer?.id ?? 'empty-editor';
   const editorWordCount = useMemo(() => getTextLengthFromHtml(editorContent), [editorContent]);
   const selectedCustomerTitle = selectedCustomer
     ? [selectedCustomer.company || '未命名用户', selectedCustomer.contact, selectedCustomer.country].filter(Boolean).join(' · ')
@@ -407,11 +475,18 @@ function App() {
   }), [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
-    if (!editorRef.current) return;
+    if (!editorRef.current || isMergedWorkflowView) return;
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
     editorSelectionRef.current = null;
-  }, [editorKey]);
+  }, [editorKey, editorContent, isMergedWorkflowView]);
+
+  useEffect(() => {
+    if (!editorRef.current || !isMergedWorkflowView) return;
+    editorRef.current.innerHTML = toEditorHtml(editorContent);
+    prepareEditorImages();
+    editorSelectionRef.current = null;
+  }, [editorContent, isMergedWorkflowView]);
 
   useEffect(() => () => {
     removeCustomImageDragListeners();
@@ -432,13 +507,14 @@ function App() {
   }, [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
-    saveViewState({ selectedId, selectedWorkflowId });
-  }, [selectedId, selectedWorkflowId]);
+    saveViewState({ selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode });
+  }, [selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode]);
 
   useEffect(() => {
     if (customers.length === 0) {
       if (selectedId) setSelectedId('');
       if (selectedWorkflowId) setSelectedWorkflowId('');
+      if (selectedWorkflowIds.length > 0) setSelectedWorkflowIds([]);
       return;
     }
 
@@ -446,17 +522,25 @@ function App() {
     if (!hasSelectedCustomer) {
       setSelectedId(customers[0]?.id ?? '');
       setSelectedWorkflowId('');
+      setSelectedWorkflowIds([]);
       return;
+    }
+
+    const workflows = customers.find((customer) => customer.id === selectedId)?.timeline ?? [];
+    if (selectedWorkflowIds.length > 0) {
+      const nextSelectedWorkflowIds = selectedWorkflowIds.filter((item) => workflows.some((workflow) => workflow.id === item));
+      if (nextSelectedWorkflowIds.length !== selectedWorkflowIds.length) {
+        setSelectedWorkflowIds(nextSelectedWorkflowIds);
+      }
     }
 
     if (!selectedWorkflowId) return;
 
-    const workflows = customers.find((customer) => customer.id === selectedId)?.timeline ?? [];
     const hasSelectedWorkflow = workflows.some((item) => item.id === selectedWorkflowId);
     if (!hasSelectedWorkflow) {
       setSelectedWorkflowId('');
     }
-  }, [customers, selectedId, selectedWorkflowId]);
+  }, [customers, selectedId, selectedWorkflowId, selectedWorkflowIds]);
 
   useEffect(() => {
     if (!activeResizer) return undefined;
@@ -523,7 +607,43 @@ function App() {
   function selectCustomer(id) {
     setSelectedId(id);
     setSelectedWorkflowId('');
+    setSelectedWorkflowIds([]);
     setEditingWorkflowTitleId('');
+  }
+
+  function changeWorkflowViewMode(mode) {
+    if (mode === workflowViewMode) return;
+    if (mode === 'merged') {
+      const nextSelectedIds = selectedWorkflowId
+        ? [selectedWorkflowId]
+        : selectedCustomer?.timeline?.[0]?.id
+          ? [selectedCustomer.timeline[0].id]
+          : [];
+      setSelectedWorkflowIds(nextSelectedIds);
+    } else if (!selectedWorkflowId && selectedWorkflowIds[0]) {
+      setSelectedWorkflowId(selectedWorkflowIds[0]);
+    }
+    setWorkflowViewMode(mode);
+    setEditingWorkflowTitleId('');
+  }
+
+  function selectSingleWorkflow(workflowId) {
+    setSelectedWorkflowId(workflowId);
+  }
+
+  function focusWorkflow(workflowId) {
+    setSelectedWorkflowId(workflowId);
+  }
+
+  function toggleMergedWorkflow(workflowId) {
+    setSelectedWorkflowId(workflowId);
+    setSelectedWorkflowIds((current) => {
+      if (current.includes(workflowId)) {
+        const next = current.filter((item) => item !== workflowId);
+        return next;
+      }
+      return [...current, workflowId];
+    });
   }
 
   function updateWorkflow(workflowId, patch) {
@@ -709,12 +829,16 @@ function App() {
       timeline: [item, ...(selectedCustomer.timeline ?? [])],
     });
     setSelectedWorkflowId(item.id);
+    if (workflowViewMode === 'merged') {
+      setSelectedWorkflowIds((current) => [item.id, ...current.filter((entryId) => entryId !== item.id)]);
+    }
     setEditingWorkflowTitleId('');
     setNoteTitleDraft('');
   }
 
   function updateEditorContent(value) {
     if (!selectedCustomer) return;
+    if (isMergedWorkflowView) return;
     if (!selectedWorkflow) {
       updateCustomer(selectedCustomer.id, { messyNotes: value });
       return;
@@ -1318,6 +1442,7 @@ function App() {
         : selectedCustomer.messyNotes,
     });
     setSelectedWorkflowId(nextSelectedWorkflow);
+    setSelectedWorkflowIds((current) => current.filter((item) => item !== workflowId));
     if (editingWorkflowTitleId === workflowId) {
       setEditingWorkflowTitleId('');
     }
@@ -1453,7 +1578,7 @@ function App() {
           {selectedCustomer ? (
             <div className="conversationBody">
               <div className="editorShell">
-                <div className="editorToolbar">
+                <div className={`editorToolbar ${isMergedWorkflowView ? 'isDisabled' : ''}`}>
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('undo')} title="撤销">
                     <Undo2 size={16} />
                   </button>
@@ -1525,8 +1650,8 @@ function App() {
                 <div
                   key={editorKey}
                   ref={editorRef}
-                  className="messyContent"
-                  contentEditable={Boolean(selectedCustomer)}
+                  className={`messyContent ${isMergedWorkflowView ? 'mergedViewContent' : ''}`}
+                  contentEditable={Boolean(selectedCustomer) && !isMergedWorkflowView}
                   suppressContentEditableWarning
                   onInput={syncEditorContent}
                   onMouseDown={handleEditorMouseDown}
@@ -1536,7 +1661,11 @@ function App() {
                   onFocus={saveEditorSelection}
                   onClick={handleEditorClick}
                   onWheel={handleEditorWheel}
-                  data-placeholder={selectedWorkflow ? '编辑当前工作流对应的文档内容。' : '请先添加或选择一个工作流。'}
+                  data-placeholder={isMergedWorkflowView
+                    ? '请选择至少一个工作流进行合并查看。'
+                    : selectedWorkflow
+                      ? '编辑当前工作流对应的文档内容。'
+                      : '请先添加或选择一个工作流。'}
                 />
                 <div className="wordCount">字数 · {editorWordCount}</div>
               </div>
@@ -1590,7 +1719,7 @@ function App() {
             <CollapsedWorkflowRail
               workflows={selectedCustomer?.timeline ?? []}
               selectedWorkflowId={selectedWorkflow?.id}
-              onSelect={setSelectedWorkflowId}
+              onSelect={selectSingleWorkflow}
             />
           ) : selectedCustomer ? (
             <div className="archiveScroll">
@@ -1645,12 +1774,30 @@ function App() {
 
                 <div className="archiveWorkflowBlock">
                   <div className="archiveWorkflowHeader">
-                    <h3>最近工作流</h3>
+                    <div className="archiveWorkflowHeading">
+                      <h3>最近工作流</h3>
+                      <div className="workflowViewSwitch" role="tablist" aria-label="工作流查看模式">
+                        <button
+                          type="button"
+                          className={workflowViewMode === 'single' ? 'active' : ''}
+                          onClick={() => changeWorkflowViewMode('single')}
+                        >
+                          单独查看
+                        </button>
+                        <button
+                          type="button"
+                          className={workflowViewMode === 'merged' ? 'active' : ''}
+                          onClick={() => changeWorkflowViewMode('merged')}
+                        >
+                          合并查看
+                        </button>
+                      </div>
+                    </div>
                     <div className="archiveWorkflowActions">
                       <button
                         className="archiveDeleteWorkflowButton"
-                        onClick={() => selectedWorkflow && deleteWorkflow(selectedWorkflow.id)}
-                        disabled={!selectedWorkflow}
+                        onClick={() => activeWorkflowForActions && deleteWorkflow(activeWorkflowForActions.id)}
+                        disabled={!activeWorkflowForActions}
                       >
                         <Trash2 size={14} />
                         删除
@@ -1661,14 +1808,30 @@ function App() {
                   <div className={`archiveTimeline ${(selectedCustomer.timeline ?? []).length === 0 ? 'emptyTimeline' : ''}`}>
                   {(selectedCustomer.timeline ?? []).map((item) => {
                     const editingTitle = editingWorkflowTitleId === item.id;
+                    const isSelected = isMergedWorkflowView
+                      ? selectedWorkflowIds.includes(item.id)
+                      : selectedWorkflow?.id === item.id;
 
                     return (
                       <div
-                        className={`archiveTimelineRow ${selectedWorkflow?.id === item.id ? 'selectedWorkflow' : ''}`}
+                        className={`archiveTimelineRow ${isSelected ? 'selectedWorkflow' : ''}`}
                         key={item.id}
-                        onClick={() => setSelectedWorkflowId(item.id)}
+                        onClick={() => {
+                          if (isMergedWorkflowView) {
+                            toggleMergedWorkflow(item.id);
+                            return;
+                          }
+                          selectSingleWorkflow(item.id);
+                        }}
                         onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') setSelectedWorkflowId(item.id);
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            if (isMergedWorkflowView) {
+                              toggleMergedWorkflow(item.id);
+                              return;
+                            }
+                            selectSingleWorkflow(item.id);
+                          }
                         }}
                         role="button"
                         tabIndex={0}
@@ -1683,11 +1846,18 @@ function App() {
                             value={item.title ?? '沟通记录'}
                             readOnly={!editingTitle}
                             title={editingTitle ? '编辑标题，按回车完成' : '双击修改标题'}
-                            onFocus={() => setSelectedWorkflowId(item.id)}
-                            onClick={(event) => event.stopPropagation()}
+                            onFocus={() => focusWorkflow(item.id)}
+                            onClick={(event) => {
+                              if (isMergedWorkflowView) {
+                                event.stopPropagation();
+                                toggleMergedWorkflow(item.id);
+                                return;
+                              }
+                              event.stopPropagation();
+                            }}
                             onDoubleClick={(event) => {
                               event.stopPropagation();
-                              setSelectedWorkflowId(item.id);
+                              focusWorkflow(item.id);
                               setEditingWorkflowTitleId(item.id);
                               requestAnimationFrame(() => {
                                 event.currentTarget.focus();
@@ -1713,11 +1883,17 @@ function App() {
                         </div>
                         <label className="workflowPick" onClick={(event) => event.stopPropagation()}>
                           <input
-                            type="radio"
-                            name="selectedWorkflow"
-                            checked={selectedWorkflow?.id === item.id}
-                            onChange={() => setSelectedWorkflowId(item.id)}
-                            aria-label={`选择 ${item.title ?? item.content ?? '工作流'}`}
+                            type={isMergedWorkflowView ? 'checkbox' : 'radio'}
+                            name={isMergedWorkflowView ? undefined : 'selectedWorkflow'}
+                            checked={isSelected}
+                            onChange={() => {
+                              if (isMergedWorkflowView) {
+                                toggleMergedWorkflow(item.id);
+                                return;
+                              }
+                              selectSingleWorkflow(item.id);
+                            }}
+                            aria-label={`${isMergedWorkflowView ? '合并选择' : '选择'} ${item.title ?? item.content ?? '工作流'}`}
                           />
                           <span />
                         </label>
@@ -1725,7 +1901,7 @@ function App() {
                           <select
                             value={item.status}
                             className={`statusSelect status${item.status}`}
-                            onFocus={() => setSelectedWorkflowId(item.id)}
+                            onFocus={() => focusWorkflow(item.id)}
                             onClick={(event) => event.stopPropagation()}
                             onChange={(event) => updateWorkflow(item.id, { status: event.target.value })}
                           >
