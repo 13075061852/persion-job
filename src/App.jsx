@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
   AlignCenter,
   AlignLeft,
   AlignRight,
@@ -21,7 +35,6 @@ import {
   ListOrdered,
   MessageSquareText,
   Shrink,
-  Pin,
   Plus,
   Redo2,
   Search,
@@ -36,6 +49,7 @@ import {
 
 const STORAGE_KEY = 'personal-workflow-manager-v1';
 const LAYOUT_STORAGE_KEY = 'personal-workflow-manager-layout-v1';
+const VIEW_STATE_STORAGE_KEY = 'personal-workflow-manager-view-state-v1';
 const CUSTOMER_GRADES = ['A', 'B', 'C', 'D'];
 const EDITOR_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px', '28px', '36px'];
 const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#7c3aed'];
@@ -216,6 +230,32 @@ function saveLayout(layout) {
   localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
 }
 
+function readInitialViewState() {
+  try {
+    const stored = localStorage.getItem(VIEW_STATE_STORAGE_KEY);
+    if (!stored) {
+      return {
+        selectedId: '',
+        selectedWorkflowId: '',
+      };
+    }
+    const parsed = JSON.parse(stored);
+    return {
+      selectedId: typeof parsed.selectedId === 'string' ? parsed.selectedId : '',
+      selectedWorkflowId: typeof parsed.selectedWorkflowId === 'string' ? parsed.selectedWorkflowId : '',
+    };
+  } catch {
+    return {
+      selectedId: '',
+      selectedWorkflowId: '',
+    };
+  }
+}
+
+function saveViewState(viewState) {
+  localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify(viewState));
+}
+
 function escapeHtml(value = '') {
   return value
     .replaceAll('&', '&amp;')
@@ -278,9 +318,10 @@ function normalizeFieldLabels(fieldLabels = {}) {
 
 function App() {
   const initialLayout = readInitialLayout();
+  const initialViewState = readInitialViewState();
   const [customers, setCustomers] = useState(readInitialCustomers);
-  const [selectedId, setSelectedId] = useState(customers[0]?.id ?? '');
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
+  const [selectedId, setSelectedId] = useState(() => initialViewState.selectedId || customers[0]?.id || '');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(() => initialViewState.selectedWorkflowId || '');
   const [query, setQuery] = useState('');
   const [gradeFilter, setGradeFilter] = useState('全部');
   const [noteTitleDraft, setNoteTitleDraft] = useState('');
@@ -297,6 +338,16 @@ function App() {
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
   const imageInputRef = useRef(null);
+  const imageDragStateRef = useRef(null);
+  const imageDragGhostRef = useRef(null);
+  const imageDropMarkerRef = useRef(null);
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6,
+      },
+    }),
+  );
 
   const selectedCustomer = customers.find((customer) => customer.id === selectedId) ?? customers[0];
   const archiveCustomer = archiveEditing && archiveDraft?.id === selectedCustomer?.id
@@ -319,8 +370,7 @@ function App() {
       .filter((customer) => {
         const haystack = `${customer.company} ${customer.contact} ${customer.country} ${customer.email}`.toLowerCase();
         return haystack.includes(query.trim().toLowerCase()) && (gradeFilter === '全部' || customer.grade === gradeFilter);
-      })
-      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+      });
   }, [customers, gradeFilter, query]);
 
   const stats = useMemo(() => {
@@ -343,6 +393,15 @@ function App() {
     editorSelectionRef.current = null;
   }, [editorKey]);
 
+  useEffect(() => () => {
+    removeCustomImageDragListeners();
+    removeImageDragGhost();
+    removeImageDropMarker();
+    imageDragStateRef.current = null;
+    document.body.style.removeProperty('cursor');
+    document.body.style.removeProperty('user-select');
+  }, []);
+
   useEffect(() => {
     setArchiveEditing(false);
     setArchiveDraft(null);
@@ -351,6 +410,33 @@ function App() {
   useEffect(() => {
     saveLayout({ leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth });
   }, [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
+
+  useEffect(() => {
+    saveViewState({ selectedId, selectedWorkflowId });
+  }, [selectedId, selectedWorkflowId]);
+
+  useEffect(() => {
+    if (customers.length === 0) {
+      if (selectedId) setSelectedId('');
+      if (selectedWorkflowId) setSelectedWorkflowId('');
+      return;
+    }
+
+    const hasSelectedCustomer = customers.some((customer) => customer.id === selectedId);
+    if (!hasSelectedCustomer) {
+      setSelectedId(customers[0]?.id ?? '');
+      setSelectedWorkflowId('');
+      return;
+    }
+
+    if (!selectedWorkflowId) return;
+
+    const workflows = customers.find((customer) => customer.id === selectedId)?.timeline ?? [];
+    const hasSelectedWorkflow = workflows.some((item) => item.id === selectedWorkflowId);
+    if (!hasSelectedWorkflow) {
+      setSelectedWorkflowId('');
+    }
+  }, [customers, selectedId, selectedWorkflowId]);
 
   useEffect(() => {
     if (!activeResizer) return undefined;
@@ -423,10 +509,32 @@ function App() {
     updateCustomer(selectedCustomer.id, { timeline });
   }
 
-  function togglePinned(id) {
+  function reorderCustomers(activeId, overId) {
+    if (!overId || activeId === overId) return;
+
+    const visibleIds = filteredCustomers.map((customer) => customer.id);
+    const oldIndex = visibleIds.indexOf(activeId);
+    const newIndex = visibleIds.indexOf(overId);
+
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const visibleIdSet = new Set(visibleIds);
+    const visibleCustomers = customers.filter((customer) => visibleIdSet.has(customer.id));
+    const reorderedVisibleCustomers = arrayMove(visibleCustomers, oldIndex, newIndex);
+    let visibleCursor = 0;
+
     commitCustomers(customers.map((customer) => (
-      customer.id === id ? { ...customer, pinned: !customer.pinned } : customer
+      visibleIdSet.has(customer.id)
+        ? reorderedVisibleCustomers[visibleCursor++]
+        : customer
     )));
+  }
+
+  function handleCustomerDragEnd(event) {
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : '';
+
+    reorderCustomers(activeId, overId);
   }
 
   function addCustomer() {
@@ -896,28 +1004,210 @@ function App() {
     window.open(normalizeEditorUrl(href), '_blank', 'noopener,noreferrer');
   }
 
-  function handleEditorDragStart(event) {
-    const imageFrame = event.target.closest?.('.editorImageFrame');
-    if (!imageFrame || !editorRef.current?.contains(imageFrame)) return;
+  function getEditorDropRange(clientX, clientY) {
+    if (document.caretRangeFromPoint) {
+      return document.caretRangeFromPoint(clientX, clientY);
+    }
 
-    event.preventDefault();
-    clearActiveEditorImage();
-    imageFrame.classList.add('active');
+    if (document.caretPositionFromPoint) {
+      const position = document.caretPositionFromPoint(clientX, clientY);
+      if (!position) return null;
+      const range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+      return range;
+    }
+
+    return null;
   }
 
-  function handleEditorDrop(event) {
-    const isInternalImageDrop = event.dataTransfer?.types
-      ? Array.from(event.dataTransfer.types).some((type) => type === 'text/html' || type === 'text/uri-list')
-      : false;
+  function removeImageDropMarker() {
+    imageDropMarkerRef.current?.remove();
+    imageDropMarkerRef.current = null;
+  }
 
-    if (!isInternalImageDrop) return;
+  function removeImageDragGhost() {
+    imageDragGhostRef.current?.remove();
+    imageDragGhostRef.current = null;
+  }
 
-    const html = event.dataTransfer?.getData('text/html') ?? '';
-    const uri = event.dataTransfer?.getData('text/uri-list') ?? '';
-    if (!html.includes('editorImageFrame') && !html.includes('<img') && !uri.startsWith('data:image/')) return;
+  function removeCustomImageDragListeners() {
+    document.removeEventListener('mousemove', handleCustomImageDragMove, true);
+    document.removeEventListener('mouseup', stopCustomImageDrag, true);
+    window.removeEventListener('blur', stopCustomImageDrag);
+    document.removeEventListener('visibilitychange', stopCustomImageDrag);
+  }
 
-    event.preventDefault();
+  function updateImageDragGhost(clientX, clientY) {
+    const dragState = imageDragStateRef.current;
+    const ghost = imageDragGhostRef.current;
+    if (!dragState || !ghost) return;
+
+    const left = clientX - dragState.pointerOffsetX;
+    const top = clientY - dragState.pointerOffsetY;
+    ghost.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  }
+
+  function ensureImageDropMarker(frame) {
+    if (imageDropMarkerRef.current) return imageDropMarkerRef.current;
+    const marker = document.createElement('span');
+    marker.className = 'editorImageDropMarker';
+    marker.style.width = frame.style.width || `${Math.round(frame.getBoundingClientRect().width)}px`;
+    marker.style.height = `${Math.round(frame.getBoundingClientRect().height)}px`;
+    marker.style.display = frame.style.display || 'inline-block';
+    marker.style.marginLeft = frame.style.marginLeft;
+    marker.style.marginRight = frame.style.marginRight;
+    imageDropMarkerRef.current = marker;
+    return marker;
+  }
+
+  function placeImageDropMarker(frame, clientX, clientY) {
+    const editor = editorRef.current;
+    if (!editor) return false;
+
+    const range = getEditorDropRange(clientX, clientY);
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      return false;
+    }
+
+    const marker = ensureImageDropMarker(frame);
+    if (marker.contains(range.commonAncestorContainer)) {
+      return true;
+    }
+    const targetFrame = range.startContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer.closest?.('.editorImageFrame')
+      : range.startContainer?.parentElement?.closest?.('.editorImageFrame');
+
+    if (targetFrame && targetFrame !== frame) {
+      const targetRect = targetFrame.getBoundingClientRect();
+      if (clientY > targetRect.top + targetRect.height / 2) {
+        targetFrame.parentNode?.insertBefore(marker, targetFrame.nextSibling);
+      } else {
+        targetFrame.parentNode?.insertBefore(marker, targetFrame);
+      }
+      return true;
+    }
+
+    range.insertNode(marker);
+    return true;
+  }
+
+  function finishImageDrop(frame) {
+    const marker = imageDropMarkerRef.current;
+    if (!marker?.parentNode || !editorRef.current) return false;
+
+    marker.replaceWith(frame);
+    imageDropMarkerRef.current = null;
     clearActiveEditorImage();
+    frame.classList.add('active');
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStartAfter(frame);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    syncEditorContent();
+    saveEditorSelection();
+    return true;
+  }
+
+  function restoreImageFrameAfterCanceledDrag(dragState) {
+    const { frame, originalParent, originalNextSibling } = dragState;
+    if (frame.isConnected) return;
+
+    if (originalParent?.isConnected) {
+      originalParent.insertBefore(
+        frame,
+        originalNextSibling?.parentNode === originalParent ? originalNextSibling : null,
+      );
+      return;
+    }
+
+    const marker = imageDropMarkerRef.current;
+    if (marker?.parentNode) {
+      marker.parentNode.insertBefore(frame, marker);
+      return;
+    }
+
+    editorRef.current?.appendChild(frame);
+  }
+
+  function stopCustomImageDrag(event) {
+    const dragState = imageDragStateRef.current;
+    if (!dragState) return;
+
+    const { frame, hasMoved } = dragState;
+    removeCustomImageDragListeners();
+    frame.classList.remove('dragging');
+    document.body.style.removeProperty('cursor');
+    document.body.style.removeProperty('user-select');
+
+    const dropped = hasMoved ? finishImageDrop(frame) : false;
+
+    if (!dropped) {
+      restoreImageFrameAfterCanceledDrag(dragState);
+    }
+
+    imageDragStateRef.current = null;
+    removeImageDragGhost();
+    removeImageDropMarker();
+  }
+
+  function handleCustomImageDragMove(event) {
+    const dragState = imageDragStateRef.current;
+    if (!dragState) return;
+
+    const movedX = event.clientX - dragState.startX;
+    const movedY = event.clientY - dragState.startY;
+    if (!dragState.hasMoved && Math.hypot(movedX, movedY) < 6) {
+      return;
+    }
+
+    dragState.hasMoved = true;
+    dragState.frame.classList.add('dragging');
+    if (!dragState.placeholderInserted) {
+      const marker = ensureImageDropMarker(dragState.frame);
+      dragState.frame.parentNode?.replaceChild(marker, dragState.frame);
+      dragState.placeholderInserted = true;
+    }
+    updateImageDragGhost(event.clientX, event.clientY);
+    placeImageDropMarker(dragState.frame, event.clientX, event.clientY);
+    event.preventDefault();
+  }
+
+  function beginCustomImageDrag(frame, startEvent) {
+    startEvent.preventDefault();
+    const frameRect = frame.getBoundingClientRect();
+    const ghost = frame.cloneNode(true);
+    ghost.classList.remove('active');
+    ghost.classList.add('dragGhost');
+    ghost.style.width = `${Math.round(frameRect.width)}px`;
+    ghost.style.height = `${Math.round(frameRect.height)}px`;
+    ghost.style.marginLeft = '0';
+    ghost.style.marginRight = '0';
+    document.body.appendChild(ghost);
+    imageDragGhostRef.current = ghost;
+
+    imageDragStateRef.current = {
+      frame,
+      startX: startEvent.clientX,
+      startY: startEvent.clientY,
+      hasMoved: false,
+      placeholderInserted: false,
+      originalParent: frame.parentNode,
+      originalNextSibling: frame.nextSibling,
+      pointerOffsetX: startEvent.clientX - frameRect.left,
+      pointerOffsetY: startEvent.clientY - frameRect.top,
+    };
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+    updateImageDragGhost(startEvent.clientX, startEvent.clientY);
+    document.addEventListener('mousemove', handleCustomImageDragMove, true);
+    document.addEventListener('mouseup', stopCustomImageDrag, true);
+    window.addEventListener('blur', stopCustomImageDrag);
+    document.addEventListener('visibilitychange', stopCustomImageDrag);
   }
 
   function handleEditorWheel(event) {
@@ -936,31 +1226,40 @@ function App() {
 
   function handleEditorMouseDown(event) {
     const handle = event.target.closest?.('.editorImageResizeHandle');
-    if (!handle || !editorRef.current?.contains(handle)) return;
+    if (handle && editorRef.current?.contains(handle)) {
+      const frame = handle.closest('.editorImageFrame');
+      if (!frame) return;
 
-    const frame = handle.closest('.editorImageFrame');
-    if (!frame) return;
+      event.preventDefault();
+      clearActiveEditorImage();
+      frame.classList.add('active');
+
+      const startX = event.clientX;
+      const startWidth = frame.getBoundingClientRect().width;
+
+      function resizeImage(moveEvent) {
+        moveEvent.preventDefault();
+        setEditorImageWidth(frame, startWidth + moveEvent.clientX - startX);
+      }
+
+      function finishResize() {
+        window.removeEventListener('mousemove', resizeImage);
+        window.removeEventListener('mouseup', finishResize);
+        syncEditorContent();
+      }
+
+      window.addEventListener('mousemove', resizeImage);
+      window.addEventListener('mouseup', finishResize);
+      return;
+    }
+
+    const frame = event.target.closest?.('.editorImageFrame');
+    if (!frame || !editorRef.current?.contains(frame)) return;
 
     event.preventDefault();
     clearActiveEditorImage();
     frame.classList.add('active');
-
-    const startX = event.clientX;
-    const startWidth = frame.getBoundingClientRect().width;
-
-    function resizeImage(moveEvent) {
-      moveEvent.preventDefault();
-      setEditorImageWidth(frame, startWidth + moveEvent.clientX - startX);
-    }
-
-    function finishResize() {
-      window.removeEventListener('mousemove', resizeImage);
-      window.removeEventListener('mouseup', finishResize);
-      syncEditorContent();
-    }
-
-    window.addEventListener('mousemove', resizeImage);
-    window.addEventListener('mouseup', finishResize);
+    beginCustomImageDrag(frame, event);
   }
 
   function handleEditorKeyDown(event) {
@@ -1075,53 +1374,25 @@ function App() {
               </button>
             ))}
           </div>
-          <div className="customerList">
-            {filteredCustomers.map((customer) => (
-              <div
-                key={customer.id}
-                className={`customerRow ${selectedCustomer?.id === customer.id ? 'selected' : ''} ${customer.pinned ? 'pinned' : ''}`}
-                onClick={() => selectCustomer(customer.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') selectCustomer(customer.id);
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <BrandLogo company={customer.company} />
-                <div className="customerText">
-                  <strong>{customer.company || '未命名公司'}</strong>
-                  <span>{customer.contact || '未填写联系人'} · {customer.country || '未知国家'}</span>
-                </div>
-                <div className="customerBadges">
-                  <button
-                    type="button"
-                    className={`pinButton ${customer.pinned ? 'active' : ''}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      togglePinned(customer.id);
-                    }}
-                    title={customer.pinned ? '取消置顶' : '置顶客户'}
-                    aria-label={customer.pinned ? `取消置顶 ${customer.company || '未命名客户'}` : `置顶 ${customer.company || '未命名客户'}`}
-                  >
-                    <Pin size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className="customerDeleteButton"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      requestDeleteCustomer(customer);
-                    }}
-                    title="删除用户"
-                    aria-label={`删除 ${customer.company || '未命名客户'}`}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                  <GradeBadge grade={customer.grade} />
-                </div>
+          <DndContext
+            sensors={dragSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleCustomerDragEnd}
+          >
+            <SortableContext items={filteredCustomers.map((customer) => customer.id)} strategy={verticalListSortingStrategy}>
+              <div className="customerList">
+                {filteredCustomers.map((customer) => (
+                  <SortableCustomerRow
+                    key={customer.id}
+                    customer={customer}
+                    isSelected={selectedCustomer?.id === customer.id}
+                    onSelect={selectCustomer}
+                    onDelete={requestDeleteCustomer}
+                  />
+                ))}
               </div>
-            ))}
-          </div>
+            </SortableContext>
+          </DndContext>
           <div className="listFooter">
             <span>共 {filteredCustomers.length} 条</span>
             <div className="pager">
@@ -1147,10 +1418,17 @@ function App() {
             title={selectedCustomerTitle}
             icon={<MessageSquareText size={18} />}
             action={(
-              <button className="panelAddButton" onClick={addCustomer}>
-                <Plus size={17} />
-                添加用户
-              </button>
+              <div className="panelHeaderActions">
+                <button
+                  type="button"
+                  className="panelGhostButton"
+                  onClick={toggleEditorExpanded}
+                  title={editorExpanded ? '恢复两侧栏' : '展开编辑区'}
+                  aria-label={editorExpanded ? '恢复两侧栏' : '展开编辑区'}
+                >
+                  {editorExpanded ? <Shrink size={16} /> : <Expand size={16} />}
+                </button>
+              </div>
             )}
           />
           {selectedCustomer ? (
@@ -1224,15 +1502,6 @@ function App() {
                     hidden
                     onChange={handleEditorImageSelected}
                   />
-                  <button
-                    type="button"
-                    className="toolbarIconButton pushRight"
-                    onClick={toggleEditorExpanded}
-                    title={editorExpanded ? '恢复两侧栏' : '展开编辑区'}
-                    aria-label={editorExpanded ? '恢复两侧栏' : '展开编辑区'}
-                  >
-                    {editorExpanded ? <Shrink size={16} /> : <Expand size={16} />}
-                  </button>
                 </div>
                 <div
                   key={editorKey}
@@ -1247,8 +1516,6 @@ function App() {
                   onKeyUp={saveEditorSelection}
                   onFocus={saveEditorSelection}
                   onClick={handleEditorClick}
-                  onDragStart={handleEditorDragStart}
-                  onDrop={handleEditorDrop}
                   onWheel={handleEditorWheel}
                   data-placeholder={selectedWorkflow ? '编辑当前工作流对应的文档内容。' : '请先添加或选择一个工作流。'}
                 />
@@ -1266,9 +1533,15 @@ function App() {
                   }}
                   placeholder="输入标题"
                 />
-                <button onClick={addMessyNote}>
-                  <Send size={19} />
-                </button>
+                <div className="composerActions">
+                  <button type="button" className="composerIconButton" onClick={addMessyNote}>
+                    <Send size={19} />
+                  </button>
+                  <button type="button" className="composerAddButton" onClick={addCustomer}>
+                    <Plus size={16} />
+                    添加用户
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -1583,6 +1856,87 @@ function CollapsedCustomerRail({ customers, selectedId, onSelect }) {
         ))}
       </div>
       <strong>{customers.length}</strong>
+    </div>
+  );
+}
+
+function SortableCustomerRow({ customer, isSelected, onSelect, onDelete }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isSorting,
+  } = useSortable({ id: customer.id });
+
+  return (
+    <div
+      className="sortableCustomerRow"
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform ? { ...transform, x: 0 } : null),
+        transition,
+      }}
+    >
+      <CustomerRowCard
+        customer={customer}
+        isSelected={isSelected}
+        onSelect={onSelect}
+        onDelete={onDelete}
+        className={isDragging ? 'dragging' : isSorting ? 'sorting' : ''}
+        dragAttributes={attributes}
+        dragListeners={listeners}
+      />
+    </div>
+  );
+}
+
+function CustomerRowCard({
+  customer,
+  isSelected,
+  onSelect,
+  onDelete,
+  className = '',
+  dragAttributes,
+  dragListeners,
+  dragging = false,
+  overlay = false,
+}) {
+  return (
+    <div
+      className={`customerRow ${isSelected ? 'selected' : ''} ${dragging ? 'dragging' : ''} ${overlay ? 'overlay' : ''} ${className}`.trim()}
+      onClick={() => onSelect(customer.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onSelect(customer.id);
+      }}
+      role="button"
+      tabIndex={0}
+      {...dragAttributes}
+      {...dragListeners}
+    >
+      <BrandLogo company={customer.company} />
+      <div className="customerText">
+        <strong>{customer.company || '未命名公司'}</strong>
+        <span>{customer.contact || '未填写联系人'} · {customer.country || '未知国家'}</span>
+      </div>
+      <div className="customerBadges">
+        <button
+          type="button"
+          className="customerDeleteButton"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete(customer);
+          }}
+          title="删除用户"
+          aria-label={`删除 ${customer.company || '未命名客户'}`}
+        >
+          <Trash2 size={13} />
+        </button>
+        <GradeBadge grade={customer.grade} />
+      </div>
     </div>
   );
 }
