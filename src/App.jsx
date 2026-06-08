@@ -13,12 +13,12 @@ import {
   Database,
   Eraser,
   Expand,
-  File,
   FileText,
   Image,
   Italic,
   Link,
   List,
+  ListOrdered,
   MessageSquareText,
   Shrink,
   Pin,
@@ -28,7 +28,6 @@ import {
   Send,
   Settings,
   Star,
-  Tag,
   Trash2,
   Underline,
   Undo2,
@@ -43,6 +42,13 @@ const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04
 const EDITOR_BACKGROUND_COLORS = ['#fff7ad', '#fee2e2', '#dbeafe', '#dcfce7', '#f3e8ff', '#ffffff'];
 const EDITOR_IMAGE_MIN_WIDTH = 80;
 const EDITOR_IMAGE_WHEEL_STEP = 32;
+const DEFAULT_LEFT_PANEL_WIDTH = 360;
+const DEFAULT_RIGHT_PANEL_WIDTH = 540;
+const COLLAPSED_PANEL_WIDTH = 48;
+const RESIZER_WIDTH = 10;
+const MIN_LEFT_PANEL_WIDTH = 260;
+const MIN_RIGHT_PANEL_WIDTH = 360;
+const MIN_CENTER_PANEL_WIDTH = 360;
 
 const gradeMap = {
   A: '非常优质',
@@ -181,9 +187,28 @@ function saveCustomers(customers) {
 function readInitialLayout() {
   try {
     const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    return stored ? JSON.parse(stored) : { leftCollapsed: false, rightCollapsed: false };
+    if (!stored) {
+      return {
+        leftCollapsed: false,
+        rightCollapsed: false,
+        leftPanelWidth: DEFAULT_LEFT_PANEL_WIDTH,
+        rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
+      };
+    }
+    const parsed = JSON.parse(stored);
+    return {
+      leftCollapsed: Boolean(parsed.leftCollapsed),
+      rightCollapsed: Boolean(parsed.rightCollapsed),
+      leftPanelWidth: Number(parsed.leftPanelWidth) || DEFAULT_LEFT_PANEL_WIDTH,
+      rightPanelWidth: Number(parsed.rightPanelWidth) || DEFAULT_RIGHT_PANEL_WIDTH,
+    };
   } catch {
-    return { leftCollapsed: false, rightCollapsed: false };
+    return {
+      leftCollapsed: false,
+      rightCollapsed: false,
+      leftPanelWidth: DEFAULT_LEFT_PANEL_WIDTH,
+      rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
+    };
   }
 }
 
@@ -264,7 +289,11 @@ function App() {
   const [archiveDraft, setArchiveDraft] = useState(null);
   const [leftCollapsed, setLeftCollapsed] = useState(initialLayout.leftCollapsed);
   const [rightCollapsed, setRightCollapsed] = useState(initialLayout.rightCollapsed);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(initialLayout.leftPanelWidth);
+  const [rightPanelWidth, setRightPanelWidth] = useState(initialLayout.rightPanelWidth);
+  const [activeResizer, setActiveResizer] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
+  const boardRef = useRef(null);
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -303,6 +332,9 @@ function App() {
 
   const activeWorkflowCount = selectedCustomer?.timeline?.filter((item) => item.status !== '暂停').length ?? 0;
   const editorExpanded = leftCollapsed && rightCollapsed;
+  const boardStyle = useMemo(() => ({
+    gridTemplateColumns: `${leftCollapsed ? COLLAPSED_PANEL_WIDTH : leftPanelWidth}px ${RESIZER_WIDTH}px minmax(0, 1fr) ${RESIZER_WIDTH}px ${rightCollapsed ? COLLAPSED_PANEL_WIDTH : rightPanelWidth}px`,
+  }), [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
     if (!editorRef.current) return;
@@ -315,6 +347,58 @@ function App() {
     setArchiveEditing(false);
     setArchiveDraft(null);
   }, [selectedCustomer?.id]);
+
+  useEffect(() => {
+    saveLayout({ leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth });
+  }, [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
+
+  useEffect(() => {
+    if (!activeResizer) return undefined;
+
+    const handlePointerMove = (event) => {
+      const boardRect = boardRef.current?.getBoundingClientRect();
+      if (!boardRect) return;
+
+      const fixedRightWidth = rightCollapsed ? COLLAPSED_PANEL_WIDTH : rightPanelWidth;
+      const fixedLeftWidth = leftCollapsed ? COLLAPSED_PANEL_WIDTH : leftPanelWidth;
+      const maxLeftWidth = Math.max(
+        MIN_LEFT_PANEL_WIDTH,
+        boardRect.width - (RESIZER_WIDTH * 2) - fixedRightWidth - MIN_CENTER_PANEL_WIDTH,
+      );
+      const maxRightWidth = Math.max(
+        MIN_RIGHT_PANEL_WIDTH,
+        boardRect.width - (RESIZER_WIDTH * 2) - fixedLeftWidth - MIN_CENTER_PANEL_WIDTH,
+      );
+
+      if (activeResizer === 'left' && !leftCollapsed) {
+        const nextWidth = Math.min(Math.max(event.clientX - boardRect.left, MIN_LEFT_PANEL_WIDTH), maxLeftWidth);
+        setLeftPanelWidth(Math.round(nextWidth));
+      }
+
+      if (activeResizer === 'right' && !rightCollapsed) {
+        const nextWidth = Math.min(Math.max(boardRect.right - event.clientX, MIN_RIGHT_PANEL_WIDTH), maxRightWidth);
+        setRightPanelWidth(Math.round(nextWidth));
+      }
+    };
+
+    const stopResizing = () => {
+      setActiveResizer('');
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResizing);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResizing);
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+  }, [activeResizer, leftCollapsed, leftPanelWidth, rightCollapsed, rightPanelWidth]);
 
   function commitCustomers(nextCustomers) {
     setCustomers(nextCustomers);
@@ -454,26 +538,22 @@ function App() {
   }
 
   function toggleLeftCollapsed() {
-    setLeftCollapsed((value) => {
-      const nextValue = !value;
-      saveLayout({ leftCollapsed: nextValue, rightCollapsed });
-      return nextValue;
-    });
+    setLeftCollapsed((value) => !value);
   }
 
   function toggleRightCollapsed() {
-    setRightCollapsed((value) => {
-      const nextValue = !value;
-      saveLayout({ leftCollapsed, rightCollapsed: nextValue });
-      return nextValue;
-    });
+    setRightCollapsed((value) => !value);
   }
 
   function toggleEditorExpanded() {
     const nextExpanded = !editorExpanded;
     setLeftCollapsed(nextExpanded);
     setRightCollapsed(nextExpanded);
-    saveLayout({ leftCollapsed: nextExpanded, rightCollapsed: nextExpanded });
+  }
+
+  function startResize(side) {
+    if ((side === 'left' && leftCollapsed) || (side === 'right' && rightCollapsed)) return;
+    setActiveResizer(side);
   }
 
   function addMessyNote() {
@@ -961,7 +1041,11 @@ function App() {
         </div>
       </header>
 
-      <section className={`board ${leftCollapsed ? 'leftCollapsed' : ''} ${rightCollapsed ? 'rightCollapsed' : ''}`}>
+      <section
+        ref={boardRef}
+        style={boardStyle}
+        className={`board ${leftCollapsed ? 'leftCollapsed' : ''} ${rightCollapsed ? 'rightCollapsed' : ''} ${activeResizer ? 'isResizing' : ''}`}
+      >
         <aside className={`panel sourcePanel ${leftCollapsed ? 'collapsedPanel' : ''}`}>
           <PanelTitle
             title="用户列表"
@@ -1050,6 +1134,14 @@ function App() {
           )}
         </aside>
 
+        <div
+          className={`panelResizer ${leftCollapsed ? 'disabled' : ''}`}
+          onPointerDown={() => startResize('left')}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整用户列表宽度"
+        />
+
         <section className="panel conversationPanel">
           <PanelTitle
             title={selectedCustomerTitle}
@@ -1063,16 +1155,6 @@ function App() {
           />
           {selectedCustomer ? (
             <div className="conversationBody">
-              <div className="conversationHero">
-                <div className="quickHints">
-                  <button onClick={() => setNoteTitleDraft('价格偏好')}><Link size={15} />价格偏好</button>
-                  <button onClick={() => setNoteTitleDraft('资料需求')}><File size={15} />资料需求</button>
-                  <button onClick={() => setNoteTitleDraft('跟进提醒')}><Bell size={15} />跟进提醒</button>
-                  <button onClick={() => setNoteTitleDraft('客户反馈')}><Search size={15} />客户反馈</button>
-                  <button onClick={() => setNoteTitleDraft('其他备注')}><Tag size={15} />其他备注</button>
-                </div>
-              </div>
-
               <div className="editorShell">
                 <div className="editorToolbar">
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('undo')} title="撤销">
@@ -1114,8 +1196,11 @@ function App() {
                     onPick={(backgroundColor) => applyEditorStyle({ backgroundColor })}
                   />
                   <span />
-                  <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('insertUnorderedList')} title="列表">
+                  <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('insertUnorderedList')} title="圆点列表">
                     <List size={16} />
+                  </button>
+                  <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('insertOrderedList')} title="数字列表">
+                    <ListOrdered size={16} />
                   </button>
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={addEditorLink} title="插入链接">
                     <Link size={16} />
@@ -1190,6 +1275,14 @@ function App() {
             <EmptyState text="暂无用户，请先添加一个用户。" />
           )}
         </section>
+
+        <div
+          className={`panelResizer ${rightCollapsed ? 'disabled' : ''}`}
+          onPointerDown={() => startResize('right')}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整用户档案宽度"
+        />
 
         <aside className={`panel studioPanel ${rightCollapsed ? 'collapsedPanel' : ''}`}>
           <PanelTitle
