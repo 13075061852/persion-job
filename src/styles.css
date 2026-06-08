@@ -1408,6 +1408,8 @@ button {
   min-height: 90px;
   padding: 14px 12px;
   gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-start;
   background: rgba(255, 255, 255, 0.78);
 }
 
@@ -1423,14 +1425,14 @@ button {
 
 .archiveIdentity {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 180px;
 }
 
 .archiveNameLine {
-  width: fit-content;
-  max-width: 100%;
-  gap: 6px;
+  width: 100%;
+  gap: 4px;
   min-width: 0;
+  flex-wrap: wrap;
   justify-content: flex-start;
 }
 
@@ -1440,6 +1442,7 @@ button {
   max-width: 210px;
   flex: 0 0 auto;
   height: 30px;
+  padding: 0;
   color: #111111;
   font-size: 21px;
   line-height: 1;
@@ -1494,6 +1497,8 @@ button {
 .archiveEditActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 7px;
   margin-left: auto;
   flex-shrink: 0;
@@ -2292,5 +2297,11 @@ button {
 
   .archiveInfoGrid {
     grid-template-columns: max-content minmax(0, 1fr);
+  }
+
+  .archiveEditActions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
   }
 }

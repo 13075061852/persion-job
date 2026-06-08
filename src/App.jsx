@@ -50,6 +50,7 @@ import {
 const STORAGE_KEY = 'personal-workflow-manager-v1';
 const LAYOUT_STORAGE_KEY = 'personal-workflow-manager-layout-v1';
 const VIEW_STATE_STORAGE_KEY = 'personal-workflow-manager-view-state-v1';
+const GLOBAL_FIELD_LABELS_STORAGE_KEY = 'personal-workflow-manager-global-field-labels-v1';
 const CUSTOMER_GRADES = ['A', 'B', 'C', 'D'];
 const EDITOR_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px', '28px', '36px'];
 const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#7c3aed'];
@@ -256,6 +257,20 @@ function saveViewState(viewState) {
   localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify(viewState));
 }
 
+function readInitialGlobalFieldLabels() {
+  try {
+    const stored = localStorage.getItem(GLOBAL_FIELD_LABELS_STORAGE_KEY);
+    if (!stored) return {};
+    return normalizeFieldLabels(JSON.parse(stored));
+  } catch {
+    return {};
+  }
+}
+
+function saveGlobalFieldLabels(fieldLabels) {
+  localStorage.setItem(GLOBAL_FIELD_LABELS_STORAGE_KEY, JSON.stringify(fieldLabels));
+}
+
 function escapeHtml(value = '') {
   return value
     .replaceAll('&', '&amp;')
@@ -292,24 +307,28 @@ function normalizeEditorUrl(value = '') {
   return `https://${url}`;
 }
 
-function makeArchiveDraft(customer) {
+function makeArchiveDraft(customer, globalFieldLabels = {}) {
   if (!customer) return null;
   const draft = archiveFields.reduce((nextDraft, [key]) => {
     nextDraft[key] = customer[key] ?? '';
     return nextDraft;
   }, { id: customer.id });
-  draft.fieldLabels = { ...(customer.fieldLabels ?? {}) };
+  draft.fieldLabels = archiveFields.reduce((labels, [key, defaultLabel]) => {
+    labels[key] = customer?.fieldLabels?.[key] ?? globalFieldLabels?.[key] ?? defaultLabel;
+    return labels;
+  }, {});
   return draft;
 }
 
-function getArchiveFieldLabel(customer, fieldKey, defaultLabel) {
-  return customer?.fieldLabels?.[fieldKey] || defaultLabel;
+function getArchiveFieldLabel(customer, globalFieldLabels, fieldKey, defaultLabel) {
+  return customer?.fieldLabels?.[fieldKey] || globalFieldLabels?.[fieldKey] || defaultLabel;
 }
 
-function normalizeFieldLabels(fieldLabels = {}) {
+function normalizeFieldLabels(fieldLabels = {}, fallbackLabels = {}) {
   return archiveFields.reduce((labels, [key, defaultLabel]) => {
     const label = fieldLabels[key]?.trim();
-    if (label && label !== defaultLabel) {
+    const fallbackLabel = fallbackLabels[key] ?? defaultLabel;
+    if (label && label !== fallbackLabel) {
       labels[key] = label;
     }
     return labels;
@@ -320,6 +339,7 @@ function App() {
   const initialLayout = readInitialLayout();
   const initialViewState = readInitialViewState();
   const [customers, setCustomers] = useState(readInitialCustomers);
+  const [globalFieldLabels, setGlobalFieldLabels] = useState(readInitialGlobalFieldLabels);
   const [selectedId, setSelectedId] = useState(() => initialViewState.selectedId || customers[0]?.id || '');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(() => initialViewState.selectedWorkflowId || '');
   const [query, setQuery] = useState('');
@@ -491,6 +511,11 @@ function App() {
     saveCustomers(nextCustomers);
   }
 
+  function commitGlobalFieldLabels(nextFieldLabels) {
+    setGlobalFieldLabels(nextFieldLabels);
+    saveGlobalFieldLabels(nextFieldLabels);
+  }
+
   function updateCustomer(id, patch) {
     commitCustomers(customers.map((customer) => (customer.id === id ? { ...customer, ...patch } : customer)));
   }
@@ -572,14 +597,14 @@ function App() {
 
   function updateArchiveDraft(fieldKey, value) {
     setArchiveDraft((draft) => ({
-      ...(draft ?? makeArchiveDraft(selectedCustomer)),
+      ...(draft ?? makeArchiveDraft(selectedCustomer, globalFieldLabels)),
       [fieldKey]: value,
     }));
   }
 
   function updateArchiveFieldLabel(fieldKey, value) {
     setArchiveDraft((draft) => {
-      const nextDraft = draft ?? makeArchiveDraft(selectedCustomer);
+      const nextDraft = draft ?? makeArchiveDraft(selectedCustomer, globalFieldLabels);
       return {
         ...nextDraft,
         fieldLabels: {
@@ -594,14 +619,14 @@ function App() {
     if (!selectedCustomer) return;
 
     if (!archiveEditing) {
-      setArchiveDraft(makeArchiveDraft(selectedCustomer));
+      setArchiveDraft(makeArchiveDraft(selectedCustomer, globalFieldLabels));
       setArchiveEditing(true);
       return;
     }
 
     if (archiveDraft?.id === selectedCustomer.id) {
       const { id, fieldLabels, ...patch } = archiveDraft;
-      patch.fieldLabels = normalizeFieldLabels(fieldLabels);
+      patch.fieldLabels = normalizeFieldLabels(fieldLabels, globalFieldLabels);
       updateCustomer(id, patch);
     }
     setArchiveEditing(false);
@@ -611,14 +636,8 @@ function App() {
   function saveArchiveAsGlobalFields() {
     if (!selectedCustomer || archiveDraft?.id !== selectedCustomer.id) return;
 
-    const { id, fieldLabels, ...patch } = archiveDraft;
-    const nextFieldLabels = normalizeFieldLabels(fieldLabels);
-    commitCustomers(customers.map((customer) => {
-      if (customer.id === id) {
-        return { ...customer, ...patch, fieldLabels: nextFieldLabels };
-      }
-      return { ...customer, fieldLabels: nextFieldLabels };
-    }));
+    const nextGlobalFieldLabels = normalizeFieldLabels(archiveDraft.fieldLabels);
+    commitGlobalFieldLabels(nextGlobalFieldLabels);
     setArchiveEditing(false);
     setArchiveDraft(null);
   }
@@ -1581,7 +1600,12 @@ function App() {
                   <div className="archiveIdentity">
                     <div className="archiveNameLine">
                       <input
-                        style={{ width: `${Math.max((archiveCustomer.company || '未命名公司').length + 1, 4)}em` }}
+                        style={{
+                          width: `${Math.max(
+                            ((archiveCustomer.company || '未命名公司').trim().length || 2) * 1.15 + 0.35,
+                            2.7,
+                          )}em`,
+                        }}
                         value={archiveCustomer.company ?? ''}
                         onChange={(event) => updateArchiveDraft('company', event.target.value)}
                         disabled={!archiveEditing}
@@ -1607,11 +1631,12 @@ function App() {
                   {archiveFields.map(([key, label]) => (
                     <ArchiveField
                       key={key}
-                      label={getArchiveFieldLabel(archiveCustomer, key, label)}
+                      label={getArchiveFieldLabel(archiveCustomer, globalFieldLabels, key, label)}
                       defaultLabel={label}
                       fieldKey={key}
                       archiveCustomer={archiveCustomer}
                       editing={archiveEditing}
+                      editingLabel={archiveDraft?.fieldLabels?.[key] ?? getArchiveFieldLabel(selectedCustomer, globalFieldLabels, key, label)}
                       updateArchiveDraft={updateArchiveDraft}
                       updateArchiveFieldLabel={updateArchiveFieldLabel}
                     />
@@ -1976,7 +2001,7 @@ function GradeBadge({ grade, compact = false }) {
   );
 }
 
-function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing, updateArchiveDraft, updateArchiveFieldLabel }) {
+function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing, editingLabel, updateArchiveDraft, updateArchiveFieldLabel }) {
   const isGrade = fieldKey === 'grade';
   return (
     <div className={`archiveField ${isGrade ? 'selectInput' : ''} ${editing ? 'editingField' : ''}`}>
@@ -1996,7 +2021,7 @@ function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing,
               }
             }}
           >
-            {archiveCustomer.fieldLabels?.[fieldKey] ?? label}
+            {editingLabel}
           </span>
         ) : (
           label
