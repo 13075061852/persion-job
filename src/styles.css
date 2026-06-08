@@ -1250,18 +1250,8 @@ button {
 }
 
 .composerTitle {
-  flex: 0 0 96px;
-  max-width: 96px;
-  font-weight: 780;
-}
-
-.composerContent {
   flex: 1 1 auto;
-}
-
-.composerTitle + .composerContent {
-  padding-left: 10px;
-  border-left: 1px solid rgba(0, 0, 0, 0.14);
+  font-weight: 780;
 }
 
 .composer button {
@@ -1393,6 +1383,14 @@ button {
   font-size: 13px;
 }
 
+.archiveEditActions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .archiveEditButton {
   justify-content: center;
   border: 1px solid rgba(0, 0, 0, 0.16);
@@ -1414,6 +1412,17 @@ button {
   color: white;
   border-color: transparent;
   background: linear-gradient(180deg, #202020, #000000);
+}
+
+.archiveGlobalSaveButton {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(19, 112, 110, 0.26);
+  border-radius: 8px;
+  color: #13706e;
+  background: rgba(239, 252, 250, 0.78);
+  font-size: 12px;
+  font-weight: 780;
 }
 
 .archiveDeleteWorkflowButton {
@@ -1464,6 +1473,22 @@ button {
   white-space: nowrap;
 }
 
+.archiveField .archiveFieldLabelText {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  border-bottom: 1px dashed rgba(19, 112, 110, 0.36);
+  color: #13706e;
+  outline: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.archiveField .archiveFieldLabelText:focus {
+  border-bottom-color: #13706e;
+  background: rgba(255, 255, 255, 0.5);
+}
+
 .archiveField input,
 .archiveField select {
   height: 100%;
@@ -1488,7 +1513,7 @@ button {
 }
 
 .archiveWorkflowBlock {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1516,11 +1541,12 @@ button {
 }
 
 .archiveTimeline {
-  flex: 1;
-  min-height: 0;
+  flex: none;
+  max-height: 360px;
   border: 1px solid rgba(0, 0, 0, 0.09);
   border-radius: 8px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: rgba(255, 255, 255, 0.9);
   overscroll-behavior: contain;
 }
@@ -1543,6 +1569,10 @@ button {
 
 .archiveTimelineRow:last-child {
   border-bottom: 0;
+}
+
+.archiveTimelineRow:last-child .timelineRail::after {
+  bottom: 0;
 }
 
 .archiveTimelineRow.selectedWorkflow {

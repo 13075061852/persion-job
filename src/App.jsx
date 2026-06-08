@@ -54,6 +54,7 @@ const gradeMap = {
 const seedCustomers = [
   {
     id: 'c-001',
+    serialNumber: '1',
     pinned: true,
     company: '华为',
     grade: 'A',
@@ -81,6 +82,7 @@ const seedCustomers = [
   },
   {
     id: 'c-002',
+    serialNumber: '2',
     pinned: false,
     company: '小米',
     grade: 'A',
@@ -103,6 +105,7 @@ const seedCustomers = [
   },
   {
     id: 'c-003',
+    serialNumber: '3',
     pinned: false,
     company: '三星',
     grade: 'B',
@@ -126,30 +129,31 @@ const seedCustomers = [
 ];
 
 const archiveFields = [
-  ['company', '公司名'],
+  ['serialNumber', '序号'],
   ['grade', '等级'],
+  ['company', '客户名字'],
   ['country', '国家'],
-  ['website', '公司网址'],
+  ['website', '网址'],
   ['contact', '联系人'],
-  ['email', '电子邮箱'],
+  ['otherContact', 'whatsapp'],
   ['phone', '电话'],
-  ['fax', '传真'],
-  ['otherContact', '其他联系方式'],
-  ['remark', '备注'],
-  ['backup1', '备用1'],
-  ['backup2', '备用2'],
-  ['backup3', '备用3'],
-  ['backup4', '备用4'],
+  ['fax', 'signal'],
+  ['email', 'email'],
+  ['backup1', 'telegram'],
+  ['backup2', 'wechat'],
   ['lastFollowDate', '最后跟进日期'],
   ['reminderDays', '提醒值'],
+  ['backup3', '备用'],
+  ['remark', '备注'],
 ];
 
 function readInitialCustomers() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     const initialCustomers = stored ? JSON.parse(stored) : seedCustomers;
-    return initialCustomers.map((customer) => ({
+    return initialCustomers.map((customer, index) => ({
       ...customer,
+      serialNumber: customer.serialNumber ?? String(index + 1),
       grade: CUSTOMER_GRADES.includes(customer.grade) ? customer.grade : 'D',
       timeline: (customer.timeline ?? []).map((item, index) => ({
         ...item,
@@ -158,8 +162,9 @@ function readInitialCustomers() {
       })),
     }));
   } catch {
-    return seedCustomers.map((customer) => ({
+    return seedCustomers.map((customer, index) => ({
       ...customer,
+      serialNumber: customer.serialNumber ?? String(index + 1),
       timeline: (customer.timeline ?? []).map((item, index) => ({
         ...item,
         title: item.title ?? '沟通记录',
@@ -209,6 +214,12 @@ function getTextLengthFromHtml(value = '') {
   return container.textContent?.length ?? 0;
 }
 
+function getPlainTextFromHtml(value = '') {
+  const container = document.createElement('div');
+  container.innerHTML = toEditorHtml(value);
+  return container.textContent ?? '';
+}
+
 function normalizeEditorUrl(value = '') {
   const url = value.trim();
   if (!url) return '';
@@ -218,10 +229,26 @@ function normalizeEditorUrl(value = '') {
 
 function makeArchiveDraft(customer) {
   if (!customer) return null;
-  return archiveFields.reduce((draft, [key]) => {
-    draft[key] = customer[key] ?? '';
-    return draft;
+  const draft = archiveFields.reduce((nextDraft, [key]) => {
+    nextDraft[key] = customer[key] ?? '';
+    return nextDraft;
   }, { id: customer.id });
+  draft.fieldLabels = { ...(customer.fieldLabels ?? {}) };
+  return draft;
+}
+
+function getArchiveFieldLabel(customer, fieldKey, defaultLabel) {
+  return customer?.fieldLabels?.[fieldKey] || defaultLabel;
+}
+
+function normalizeFieldLabels(fieldLabels = {}) {
+  return archiveFields.reduce((labels, [key, defaultLabel]) => {
+    const label = fieldLabels[key]?.trim();
+    if (label && label !== defaultLabel) {
+      labels[key] = label;
+    }
+    return labels;
+  }, {});
 }
 
 function App() {
@@ -232,7 +259,6 @@ function App() {
   const [query, setQuery] = useState('');
   const [gradeFilter, setGradeFilter] = useState('全部');
   const [noteTitleDraft, setNoteTitleDraft] = useState('');
-  const [noteDraft, setNoteDraft] = useState('');
   const [editingWorkflowTitleId, setEditingWorkflowTitleId] = useState('');
   const [archiveEditing, setArchiveEditing] = useState(false);
   const [archiveDraft, setArchiveDraft] = useState(null);
@@ -324,6 +350,7 @@ function App() {
     const today = new Date().toISOString().slice(0, 10);
     const nextCustomer = {
       id,
+      serialNumber: String(customers.length + 1),
       pinned: false,
       company: '新客户',
       grade: 'C',
@@ -358,6 +385,19 @@ function App() {
     }));
   }
 
+  function updateArchiveFieldLabel(fieldKey, value) {
+    setArchiveDraft((draft) => {
+      const nextDraft = draft ?? makeArchiveDraft(selectedCustomer);
+      return {
+        ...nextDraft,
+        fieldLabels: {
+          ...(nextDraft?.fieldLabels ?? {}),
+          [fieldKey]: value,
+        },
+      };
+    });
+  }
+
   function toggleArchiveEditing() {
     if (!selectedCustomer) return;
 
@@ -368,9 +408,25 @@ function App() {
     }
 
     if (archiveDraft?.id === selectedCustomer.id) {
-      const { id, ...patch } = archiveDraft;
+      const { id, fieldLabels, ...patch } = archiveDraft;
+      patch.fieldLabels = normalizeFieldLabels(fieldLabels);
       updateCustomer(id, patch);
     }
+    setArchiveEditing(false);
+    setArchiveDraft(null);
+  }
+
+  function saveArchiveAsGlobalFields() {
+    if (!selectedCustomer || archiveDraft?.id !== selectedCustomer.id) return;
+
+    const { id, fieldLabels, ...patch } = archiveDraft;
+    const nextFieldLabels = normalizeFieldLabels(fieldLabels);
+    commitCustomers(customers.map((customer) => {
+      if (customer.id === id) {
+        return { ...customer, ...patch, fieldLabels: nextFieldLabels };
+      }
+      return { ...customer, fieldLabels: nextFieldLabels };
+    }));
     setArchiveEditing(false);
     setArchiveDraft(null);
   }
@@ -421,18 +477,22 @@ function App() {
   }
 
   function addMessyNote() {
-    if (!selectedCustomer || !noteDraft.trim()) return;
+    if (!selectedCustomer) return;
+    const contentHtml = getEditorHtmlForSave().trim();
+    const contentText = getPlainTextFromHtml(contentHtml).trim();
+    if (!contentText && !contentHtml.includes('<img')) return;
+
     const now = new Date();
     const date = now.toISOString().slice(0, 10);
     const stamp = now.toLocaleString('zh-CN', { hour12: false });
     const title = noteTitleDraft.trim() || '沟通记录';
-    const content = noteDraft.trim();
+    const content = contentText || '[图片内容]';
     const item = {
       id: `t-${Date.now()}`,
       date,
       title,
       content,
-      documentContent: content,
+      documentContent: contentHtml,
       status: '跟进中',
     };
     const nextNote = `${selectedCustomer.messyNotes ? `${selectedCustomer.messyNotes}\n\n` : ''}[${stamp}] ${title}\n${content}`;
@@ -444,7 +504,6 @@ function App() {
     setSelectedWorkflowId(item.id);
     setEditingWorkflowTitleId('');
     setNoteTitleDraft('');
-    setNoteDraft('');
   }
 
   function updateEditorContent(value) {
@@ -1006,11 +1065,11 @@ function App() {
             <div className="conversationBody">
               <div className="conversationHero">
                 <div className="quickHints">
-                  <button onClick={() => { setNoteTitleDraft('价格偏好'); setNoteDraft('客户关心价格，请下次先确认预算区间。'); }}><Link size={15} />价格偏好</button>
-                  <button onClick={() => { setNoteTitleDraft('资料需求'); setNoteDraft('客户希望收到产品目录、参数表和报价单。'); }}><File size={15} />资料需求</button>
-                  <button onClick={() => { setNoteTitleDraft('跟进提醒'); setNoteDraft('需要在提醒日期前重新邮件跟进。'); }}><Bell size={15} />跟进提醒</button>
-                  <button onClick={() => { setNoteTitleDraft('客户反馈'); setNoteDraft('客户反馈需要单独整理。'); }}><Search size={15} />客户反馈</button>
-                  <button onClick={() => { setNoteTitleDraft('其他备注'); setNoteDraft('补充其它重要备注。'); }}><Tag size={15} />其他备注</button>
+                  <button onClick={() => setNoteTitleDraft('价格偏好')}><Link size={15} />价格偏好</button>
+                  <button onClick={() => setNoteTitleDraft('资料需求')}><File size={15} />资料需求</button>
+                  <button onClick={() => setNoteTitleDraft('跟进提醒')}><Bell size={15} />跟进提醒</button>
+                  <button onClick={() => setNoteTitleDraft('客户反馈')}><Search size={15} />客户反馈</button>
+                  <button onClick={() => setNoteTitleDraft('其他备注')}><Tag size={15} />其他备注</button>
                 </div>
               </div>
 
@@ -1120,16 +1179,7 @@ function App() {
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') addMessyNote();
                   }}
-                  placeholder="标题"
-                />
-                <input
-                  className="composerContent"
-                  value={noteDraft}
-                  onChange={(event) => setNoteDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') addMessyNote();
-                  }}
-                  placeholder="输入沟通内容，保存后同步生成工作流"
+                  placeholder="输入标题"
                 />
                 <button onClick={addMessyNote}>
                   <Send size={19} />
@@ -1175,20 +1225,29 @@ function App() {
                     </div>
                     <span>{gradeMap[archiveCustomer.grade] ? `${gradeMap[archiveCustomer.grade]} · ` : ''}{archiveCustomer.country || '未填写国家'}</span>
                   </div>
-                  <button className={`archiveEditButton ${archiveEditing ? 'savingMode' : ''}`} onClick={toggleArchiveEditing}>
-                    {archiveEditing ? '保存' : '编辑档案'}
-                  </button>
+                  <div className="archiveEditActions">
+                    {archiveEditing && (
+                      <button className="archiveGlobalSaveButton" onClick={saveArchiveAsGlobalFields}>
+                        全局保存参数名
+                      </button>
+                    )}
+                    <button className={`archiveEditButton ${archiveEditing ? 'savingMode' : ''}`} onClick={toggleArchiveEditing}>
+                      {archiveEditing ? '保存当前客户' : '编辑档案'}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="archiveInfoGrid">
                   {archiveFields.map(([key, label]) => (
                     <ArchiveField
                       key={key}
-                      label={label}
+                      label={getArchiveFieldLabel(archiveCustomer, key, label)}
+                      defaultLabel={label}
                       fieldKey={key}
                       archiveCustomer={archiveCustomer}
                       editing={archiveEditing}
                       updateArchiveDraft={updateArchiveDraft}
+                      updateArchiveFieldLabel={updateArchiveFieldLabel}
                     />
                   ))}
                 </div>
@@ -1470,11 +1529,32 @@ function GradeBadge({ grade, compact = false }) {
   );
 }
 
-function ArchiveField({ label, fieldKey, archiveCustomer, editing, updateArchiveDraft }) {
+function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing, updateArchiveDraft, updateArchiveFieldLabel }) {
   const isGrade = fieldKey === 'grade';
   return (
-    <label className={`archiveField ${isGrade ? 'selectInput' : ''} ${editing ? 'editingField' : ''}`}>
-      <span>{label}</span>
+    <div className={`archiveField ${isGrade ? 'selectInput' : ''} ${editing ? 'editingField' : ''}`}>
+      <span className="archiveFieldLabel">
+        {editing ? (
+          <span
+            className="archiveFieldLabelText"
+            contentEditable
+            suppressContentEditableWarning
+            role="textbox"
+            aria-label={`修改字段名：${defaultLabel}`}
+            onBlur={(event) => updateArchiveFieldLabel(fieldKey, event.currentTarget.textContent?.trim() || defaultLabel)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
+          >
+            {archiveCustomer.fieldLabels?.[fieldKey] ?? label}
+          </span>
+        ) : (
+          label
+        )}
+      </span>
       {isGrade ? (
         <select
           value={archiveCustomer.grade}
@@ -1493,7 +1573,7 @@ function ArchiveField({ label, fieldKey, archiveCustomer, editing, updateArchive
           placeholder="未填写"
         />
       )}
-    </label>
+    </div>
   );
 }
 
