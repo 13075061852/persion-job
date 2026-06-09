@@ -480,7 +480,7 @@ function App() {
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
     editorSelectionRef.current = null;
-  }, [editorKey, editorContent, isMergedWorkflowView]);
+  }, [editorKey, isMergedWorkflowView]);
 
   useEffect(() => {
     if (!editorRef.current || !isMergedWorkflowView) return;
