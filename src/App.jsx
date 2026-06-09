@@ -17,7 +17,6 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
-  Bell,
   Bold,
   ChevronsLeft,
   ChevronsRight,
@@ -25,6 +24,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   Eraser,
   Expand,
   FileText,
@@ -44,6 +44,7 @@ import {
   Trash2,
   Underline,
   Undo2,
+  Upload,
   UserRound,
 } from 'lucide-react';
 
@@ -51,6 +52,7 @@ const STORAGE_KEY = 'personal-workflow-manager-v1';
 const LAYOUT_STORAGE_KEY = 'personal-workflow-manager-layout-v1';
 const VIEW_STATE_STORAGE_KEY = 'personal-workflow-manager-view-state-v1';
 const GLOBAL_FIELD_LABELS_STORAGE_KEY = 'personal-workflow-manager-global-field-labels-v1';
+const BACKUP_VERSION = 1;
 const CUSTOMER_GRADES = ['A', 'B', 'C', 'D'];
 const EDITOR_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px', '28px', '36px'];
 const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#7c3aed'];
@@ -201,6 +203,23 @@ function saveCustomers(customers) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(customers));
 }
 
+function normalizeCustomers(customers) {
+  if (!Array.isArray(customers)) return [];
+  return customers.map((customer, index) => ({
+    ...customer,
+    id: typeof customer.id === 'string' && customer.id ? customer.id : `c-import-${Date.now()}-${index}`,
+    serialNumber: customer.serialNumber ?? String(index + 1),
+    pinned: Boolean(customer.pinned),
+    grade: CUSTOMER_GRADES.includes(customer.grade) ? customer.grade : 'D',
+    timeline: (customer.timeline ?? []).map((item, itemIndex) => ({
+      ...item,
+      id: typeof item.id === 'string' && item.id ? item.id : `t-import-${Date.now()}-${index}-${itemIndex}`,
+      title: item.title ?? '沟通记录',
+      documentContent: item.documentContent ?? (itemIndex === 0 ? customer.messyNotes || item.content : item.content),
+    })),
+  }));
+}
+
 function readInitialLayout() {
   try {
     const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
@@ -279,6 +298,48 @@ function readInitialGlobalFieldLabels() {
 
 function saveGlobalFieldLabels(fieldLabels) {
   localStorage.setItem(GLOBAL_FIELD_LABELS_STORAGE_KEY, JSON.stringify(fieldLabels));
+}
+
+function makeBackupPayload({ customers, globalFieldLabels, layout, viewState }) {
+  return {
+    backupVersion: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    app: 'personal-workflow-manager',
+    customers,
+    globalFieldLabels,
+    layout,
+    viewState,
+  };
+}
+
+function getCustomerIdentityKey(customer) {
+  const parts = [customer.company, customer.contact, customer.email]
+    .map((value) => String(value ?? '').trim().toLowerCase());
+  return parts.some(Boolean) ? parts.join('|') : '';
+}
+
+function makeCustomerDuplicateKeys(customers) {
+  return customers.reduce((keys, customer) => {
+    if (customer.id) keys.ids.add(customer.id);
+    const identityKey = getCustomerIdentityKey(customer);
+    if (identityKey) keys.identities.add(identityKey);
+    return keys;
+  }, { ids: new Set(), identities: new Set() });
+}
+
+function isDuplicateCustomer(customer, duplicateKeys) {
+  const identityKey = getCustomerIdentityKey(customer);
+  return duplicateKeys.ids.has(customer.id) || (identityKey && duplicateKeys.identities.has(identityKey));
+}
+
+function getImportStats(importedCustomers, currentCustomers) {
+  const duplicateKeys = makeCustomerDuplicateKeys(currentCustomers);
+  const duplicateCount = importedCustomers.filter((customer) => isDuplicateCustomer(customer, duplicateKeys)).length;
+  return {
+    totalCount: importedCustomers.length,
+    duplicateCount,
+    newCount: importedCustomers.length - duplicateCount,
+  };
 }
 
 function escapeHtml(value = '') {
@@ -399,12 +460,14 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(initialLayout.rightPanelWidth);
   const [activeResizer, setActiveResizer] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [pendingImport, setPendingImport] = useState(null);
   const [activeEditorTextColor, setActiveEditorTextColor] = useState(DEFAULT_EDITOR_TEXT_COLOR);
   const [activeEditorBackgroundColor, setActiveEditorBackgroundColor] = useState(DEFAULT_EDITOR_BACKGROUND_COLOR);
   const boardRef = useRef(null);
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
   const imageInputRef = useRef(null);
+  const backupInputRef = useRef(null);
   const imageDragStateRef = useRef(null);
   const imageDragGhostRef = useRef(null);
   const imageDropMarkerRef = useRef(null);
@@ -605,11 +668,168 @@ function App() {
     saveGlobalFieldLabels(nextFieldLabels);
   }
 
+  function getCustomersWithCurrentEditorContent(sourceCustomers = customers) {
+    if (!editorRef.current || !selectedCustomer) return sourceCustomers;
+
+    if (isMergedWorkflowView) {
+      const sections = Array.from(editorRef.current.querySelectorAll('.mergedWorkflowSection'));
+      if (sections.length === 0) return sourceCustomers;
+
+      const contentByWorkflowId = sections.reduce((contentMap, section) => {
+        const workflowId = section.getAttribute('data-workflow-id');
+        const body = section.querySelector('.mergedWorkflowBody');
+        if (workflowId && body) {
+          contentMap.set(workflowId, body.innerHTML);
+        }
+        return contentMap;
+      }, new Map());
+
+      if (contentByWorkflowId.size === 0) return sourceCustomers;
+
+      return sourceCustomers.map((customer) => {
+        if (customer.id !== selectedCustomer.id) return customer;
+        const timeline = (customer.timeline ?? []).map((entry) => (
+          contentByWorkflowId.has(entry.id)
+            ? { ...entry, documentContent: contentByWorkflowId.get(entry.id) }
+            : entry
+        ));
+        return { ...customer, timeline };
+      });
+    }
+
+    const contentHtml = getEditorHtmlForSave();
+    return sourceCustomers.map((customer) => {
+      if (customer.id !== selectedCustomer.id) return customer;
+      if (!selectedWorkflow) return { ...customer, messyNotes: contentHtml };
+
+      const timeline = (customer.timeline ?? []).map((entry) => (
+        entry.id === selectedWorkflow.id
+          ? { ...entry, documentContent: contentHtml }
+          : entry
+      ));
+      return { ...customer, timeline };
+    });
+  }
+
+  function saveCurrentEditorContent() {
+    const nextCustomers = getCustomersWithCurrentEditorContent();
+    commitCustomers(nextCustomers);
+    return nextCustomers;
+  }
+
+  function exportBackupData() {
+    const backupCustomers = getCustomersWithCurrentEditorContent();
+    const layout = { leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth };
+    const viewState = { selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode };
+    const payload = makeBackupPayload({ customers: backupCustomers, globalFieldLabels, layout, viewState });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function applyImportedBackup(payload, mode = 'overwrite', preparedCustomers = null) {
+    const importedCustomers = preparedCustomers ?? normalizeCustomers(Array.isArray(payload) ? payload : payload?.customers);
+    if (importedCustomers.length === 0) {
+      throw new Error('备份文件里没有可导入的客户数据');
+    }
+
+    const importedFieldLabels = normalizeFieldLabels(payload?.globalFieldLabels ?? {});
+    if (mode === 'append') {
+      const baseCustomers = getCustomersWithCurrentEditorContent();
+      const duplicateKeys = makeCustomerDuplicateKeys(baseCustomers);
+      const newCustomers = importedCustomers.filter((customer) => !isDuplicateCustomer(customer, duplicateKeys));
+      const nextCustomers = [...baseCustomers, ...newCustomers];
+
+      commitCustomers(nextCustomers);
+      commitGlobalFieldLabels({ ...importedFieldLabels, ...globalFieldLabels });
+      setSelectedId(selectedId || nextCustomers[0]?.id || '');
+      setArchiveEditing(false);
+      setArchiveDraft(null);
+      setEditingWorkflowTitleId('');
+      setPendingImport(null);
+      return;
+    }
+
+    const importedLayout = payload?.layout && typeof payload.layout === 'object'
+      ? {
+        leftCollapsed: Boolean(payload.layout.leftCollapsed),
+        rightCollapsed: Boolean(payload.layout.rightCollapsed),
+        leftPanelWidth: Number(payload.layout.leftPanelWidth) || DEFAULT_LEFT_PANEL_WIDTH,
+        rightPanelWidth: Number(payload.layout.rightPanelWidth) || DEFAULT_RIGHT_PANEL_WIDTH,
+      }
+      : { leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth };
+    const importedViewState = payload?.viewState && typeof payload.viewState === 'object'
+      ? {
+        selectedId: typeof payload.viewState.selectedId === 'string' ? payload.viewState.selectedId : '',
+        selectedWorkflowId: typeof payload.viewState.selectedWorkflowId === 'string' ? payload.viewState.selectedWorkflowId : '',
+        selectedWorkflowIds: Array.isArray(payload.viewState.selectedWorkflowIds)
+          ? payload.viewState.selectedWorkflowIds.filter((item) => typeof item === 'string')
+          : [],
+        workflowViewMode: payload.viewState.workflowViewMode === 'merged' ? 'merged' : 'single',
+      }
+      : { selectedId: importedCustomers[0]?.id ?? '', selectedWorkflowId: '', selectedWorkflowIds: [], workflowViewMode: 'single' };
+    const validSelectedId = importedCustomers.some((customer) => customer.id === importedViewState.selectedId)
+      ? importedViewState.selectedId
+      : importedCustomers[0]?.id ?? '';
+
+    commitCustomers(importedCustomers);
+    commitGlobalFieldLabels(importedFieldLabels);
+    setLeftCollapsed(importedLayout.leftCollapsed);
+    setRightCollapsed(importedLayout.rightCollapsed);
+    setLeftPanelWidth(importedLayout.leftPanelWidth);
+    setRightPanelWidth(importedLayout.rightPanelWidth);
+    saveLayout(importedLayout);
+    setSelectedId(validSelectedId);
+    setSelectedWorkflowId(importedViewState.selectedWorkflowId);
+    setSelectedWorkflowIds(importedViewState.selectedWorkflowIds);
+    setWorkflowViewMode(importedViewState.workflowViewMode);
+    saveViewState({ ...importedViewState, selectedId: validSelectedId });
+    setArchiveEditing(false);
+    setArchiveDraft(null);
+    setEditingWorkflowTitleId('');
+    setPendingImport(null);
+  }
+
+  function importBackupData(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const payload = JSON.parse(String(reader.result ?? ''));
+        const importedCustomers = normalizeCustomers(Array.isArray(payload) ? payload : payload?.customers);
+        if (importedCustomers.length === 0) {
+          throw new Error('备份文件里没有可导入的客户数据');
+        }
+        const currentCustomers = getCustomersWithCurrentEditorContent();
+        setPendingImport({
+          payload,
+          importedCustomers,
+          stats: getImportStats(importedCustomers, currentCustomers),
+        });
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : '导入失败，请检查备份文件');
+      }
+    };
+    reader.onerror = () => window.alert('读取备份文件失败');
+    reader.readAsText(file, 'UTF-8');
+  }
+
   function updateCustomer(id, patch) {
     commitCustomers(customers.map((customer) => (customer.id === id ? { ...customer, ...patch } : customer)));
   }
 
   function selectCustomer(id) {
+    saveCurrentEditorContent();
     setSelectedId(id);
     setSelectedWorkflowId('');
     setSelectedWorkflowIds([]);
@@ -618,6 +838,7 @@ function App() {
 
   function changeWorkflowViewMode(mode) {
     if (mode === workflowViewMode) return;
+    saveCurrentEditorContent();
     if (mode === 'merged') {
       const nextSelectedIds = selectedWorkflowId
         ? [selectedWorkflowId]
@@ -633,14 +854,17 @@ function App() {
   }
 
   function selectSingleWorkflow(workflowId) {
+    saveCurrentEditorContent();
     setSelectedWorkflowId(workflowId);
   }
 
   function focusWorkflow(workflowId) {
+    saveCurrentEditorContent();
     setSelectedWorkflowId(workflowId);
   }
 
   function toggleMergedWorkflow(workflowId) {
+    saveCurrentEditorContent();
     setSelectedWorkflowId(workflowId);
     setSelectedWorkflowIds((current) => {
       if (current.includes(workflowId)) {
@@ -1524,14 +1748,20 @@ function App() {
           </div>
         </div>
         <div className="topActions">
-          <div className="globalSearch">
-            <Search size={17} />
-            <span>搜索</span>
-          </div>
-          <button className="topIconButton" title="提醒">
-            <Bell size={19} />
+          <button type="button" className="topIconButton" title="导出数据" onClick={exportBackupData}>
+            <Download size={19} />
           </button>
-          <button className="topIconButton" title="设置">
+          <button type="button" className="topIconButton" title="导入数据" onClick={() => backupInputRef.current?.click()}>
+            <Upload size={19} />
+          </button>
+          <input
+            ref={backupInputRef}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={importBackupData}
+          />
+          <button type="button" className="topIconButton" title="设置">
             <Settings size={19} />
           </button>
         </div>
@@ -1988,6 +2218,14 @@ function App() {
           onConfirm={confirmPendingDelete}
         />
       )}
+      {pendingImport && (
+        <ImportBackupDialog
+          stats={pendingImport.stats}
+          onCancel={() => setPendingImport(null)}
+          onOverwrite={() => applyImportedBackup(pendingImport.payload, 'overwrite', pendingImport.importedCustomers)}
+          onAppend={() => applyImportedBackup(pendingImport.payload, 'append', pendingImport.importedCustomers)}
+        />
+      )}
     </main>
   );
 }
@@ -2329,6 +2567,37 @@ function ConfirmDialog({ title, message, onCancel, onConfirm }) {
         <div className="confirmActions">
           <button className="confirmCancel" onClick={onCancel}>取消</button>
           <button className="confirmDanger" onClick={onConfirm}>确认删除</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportBackupDialog({ stats, onCancel, onOverwrite, onAppend }) {
+  return (
+    <div className="confirmOverlay" role="presentation" onMouseDown={onCancel}>
+      <div className="confirmDialog importDialog" role="dialog" aria-modal="true" aria-labelledby="importTitle" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="confirmIcon importIcon">
+          <Upload size={20} />
+        </div>
+        <div className="confirmContent">
+          <h3 id="importTitle">导入数据</h3>
+          <p>备份文件中共有 {stats.totalCount} 条客户数据，新增 {stats.newCount} 条，重复 {stats.duplicateCount} 条。</p>
+        </div>
+        <div className="importStats">
+          <div>
+            <span>新增</span>
+            <strong>{stats.newCount}</strong>
+          </div>
+          <div>
+            <span>重复</span>
+            <strong>{stats.duplicateCount}</strong>
+          </div>
+        </div>
+        <div className="confirmActions importActions">
+          <button className="confirmCancel" onClick={onCancel}>取消</button>
+          <button className="confirmCancel" onClick={onAppend} disabled={stats.newCount === 0}>追加新增数据</button>
+          <button className="confirmDanger" onClick={onOverwrite}>覆盖当前数据</button>
         </div>
       </div>
     </div>

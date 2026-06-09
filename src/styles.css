@@ -109,7 +109,6 @@ button {
 .brand,
 .brandMark,
 .topActions,
-.globalSearch,
 .panelTitle,
 .panelTitle > div,
 .customerRow,
@@ -155,18 +154,6 @@ button {
 .topActions {
   margin-left: auto;
   gap: 10px;
-}
-
-.globalSearch {
-  width: 210px;
-  height: 34px;
-  gap: 8px;
-  padding: 0 12px;
-  border: 1px solid rgba(0, 0, 0, 0.16);
-  border-radius: 10px;
-  color: #666666;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.78), 0 8px 24px rgba(0, 0, 0, 0.04);
 }
 
 .primaryButton,
@@ -2431,6 +2418,55 @@ button {
   background: linear-gradient(180deg, #d65a5a, #b74646);
 }
 
+.confirmActions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.importDialog {
+  width: min(420px, 100%);
+}
+
+.importIcon {
+  border-color: rgba(0, 0, 0, 0.16);
+  color: #222222;
+  background: rgba(245, 245, 245, 0.92);
+}
+
+.importStats {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.importStats div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: rgba(250, 250, 250, 0.88);
+}
+
+.importStats span {
+  color: #666666;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.importStats strong {
+  color: #111111;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 850;
+}
+
+.importActions {
+  flex-wrap: wrap;
+}
+
 @media (max-width: 1540px) {
   .profileMetaGrid,
   .detailFieldGrid,
@@ -2440,10 +2476,6 @@ button {
 }
 
 @media (max-width: 1220px) {
-  .globalSearch {
-    width: 180px;
-  }
-
   .profileMetaGrid,
   .detailFieldGrid,
   .compactFieldGrid {
