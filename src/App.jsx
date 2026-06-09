@@ -155,22 +155,16 @@ const seedCustomers = [
 ];
 
 const archiveFields = [
-  ['serialNumber', '序号'],
-  ['grade', '等级'],
-  ['company', '客户名字'],
-  ['country', '国家'],
+  ['company', '名字'],
   ['website', '网址'],
-  ['contact', '联系人'],
-  ['otherContact', 'whatsapp'],
+  ['country', '国籍'],
   ['phone', '电话'],
-  ['fax', 'signal'],
-  ['email', 'email'],
-  ['backup1', 'telegram'],
-  ['backup2', 'wechat'],
+  ['otherContact', 'Whatsapp'],
+  ['fax', 'Signal'],
+  ['backup1', 'Telegram'],
+  ['backup2', 'Wechat'],
+  ['grade', '等级'],
   ['lastFollowDate', '最后跟进日期'],
-  ['reminderDays', '提醒值'],
-  ['backup3', '备用'],
-  ['remark', '备注'],
 ];
 
 function readInitialCustomers() {
@@ -565,7 +559,6 @@ function App() {
     };
   }, [customers]);
 
-  const activeWorkflowCount = selectedCustomer?.timeline?.filter((item) => item.status !== '暂停').length ?? 0;
   const editorExpanded = leftCollapsed && rightCollapsed;
   const boardStyle = useMemo(() => ({
     gridTemplateColumns: `${leftCollapsed ? COLLAPSED_PANEL_WIDTH : leftPanelWidth}px ${RESIZER_WIDTH}px minmax(0, 1fr) ${RESIZER_WIDTH}px ${rightCollapsed ? COLLAPSED_PANEL_WIDTH : rightPanelWidth}px`,
@@ -2203,7 +2196,18 @@ function App() {
           <PanelTitle
             title="用户档案"
             icon={<FileText size={18} />}
-            meta={selectedCustomer ? `${activeWorkflowCount} 个活跃工作流` : ''}
+            action={selectedCustomer && (
+              <div className="archiveTitleActions">
+                {archiveEditing && (
+                  <button className="archiveGlobalSaveButton" onClick={saveArchiveAsGlobalFields}>
+                    全局保存
+                  </button>
+                )}
+                <button className={`archiveEditButton ${archiveEditing ? 'savingMode' : ''}`} onClick={toggleArchiveEditing}>
+                  {archiveEditing ? '当前保存' : '编辑档案'}
+                </button>
+              </div>
+            )}
             collapsed={rightCollapsed}
             onToggle={toggleRightCollapsed}
             toggleTitle={rightCollapsed ? '展开用户档案' : '收起用户档案'}
@@ -2237,16 +2241,6 @@ function App() {
                       <GradeBadge grade={archiveCustomer.grade} compact />
                     </div>
                     <span>{gradeMap[archiveCustomer.grade] ? `${gradeMap[archiveCustomer.grade]} · ` : ''}{archiveCustomer.country || '未填写国家'}</span>
-                  </div>
-                  <div className="archiveEditActions">
-                    {archiveEditing && (
-                      <button className="archiveGlobalSaveButton" onClick={saveArchiveAsGlobalFields}>
-                        全局保存参数名
-                      </button>
-                    )}
-                    <button className={`archiveEditButton ${archiveEditing ? 'savingMode' : ''}`} onClick={toggleArchiveEditing}>
-                      {archiveEditing ? '保存当前客户' : '编辑档案'}
-                    </button>
                   </div>
                 </div>
 
