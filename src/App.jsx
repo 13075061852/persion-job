@@ -431,12 +431,12 @@ function App() {
       const content = trimWorkflowHtmlEdges(item.documentContent ?? item.content ?? '');
       return [
         `<section class="mergedWorkflowSection" data-workflow-id="${item.id}">`,
-        `<div class="mergedWorkflowMeta">`,
+        `<div class="mergedWorkflowMeta" contenteditable="false">`,
         `<span>${escapeHtml(item.date ?? '')}</span>`,
         `<span>${escapeHtml(item.title ?? item.content ?? '沟通记录')}</span>`,
         `<span class="statusTag status${item.status}">${escapeHtml(item.status ?? '')}</span>`,
         `</div>`,
-        `<div class="mergedWorkflowBody">${toEditorHtml(content)}</div>`,
+        `<div class="mergedWorkflowBody" contenteditable="true">${toEditorHtml(content)}</div>`,
         `</section>`,
       ].join('');
     }).join('')
@@ -448,6 +448,7 @@ function App() {
     : selectedWorkflow
       ? selectedWorkflow.id
       : selectedCustomer?.id ?? 'empty-editor';
+  const canEditEditor = Boolean(selectedCustomer) && (!isMergedWorkflowView || mergedWorkflows.length > 0);
   const editorWordCount = useMemo(() => getTextLengthFromHtml(editorContent), [editorContent]);
   const selectedCustomerTitle = selectedCustomer
     ? [selectedCustomer.company || '未命名用户', selectedCustomer.contact, selectedCustomer.country].filter(Boolean).join(' · ')
@@ -486,7 +487,7 @@ function App() {
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
     editorSelectionRef.current = null;
-  }, [editorContent, isMergedWorkflowView]);
+  }, [editorKey, isMergedWorkflowView]);
 
   useEffect(() => () => {
     removeCustomImageDragListeners();
@@ -838,13 +839,41 @@ function App() {
 
   function updateEditorContent(value) {
     if (!selectedCustomer) return;
-    if (isMergedWorkflowView) return;
+    if (isMergedWorkflowView) {
+      updateMergedWorkflowContent();
+      return;
+    }
     if (!selectedWorkflow) {
       updateCustomer(selectedCustomer.id, { messyNotes: value });
       return;
     }
 
     updateWorkflow(selectedWorkflow.id, { documentContent: value });
+  }
+
+  function updateMergedWorkflowContent() {
+    if (!selectedCustomer || !editorRef.current) return;
+
+    const sections = Array.from(editorRef.current.querySelectorAll('.mergedWorkflowSection'));
+    if (sections.length === 0) return;
+
+    const contentByWorkflowId = sections.reduce((contentMap, section) => {
+      const workflowId = section.getAttribute('data-workflow-id');
+      const body = section.querySelector('.mergedWorkflowBody');
+      if (workflowId && body) {
+        contentMap.set(workflowId, body.innerHTML);
+      }
+      return contentMap;
+    }, new Map());
+
+    if (contentByWorkflowId.size === 0) return;
+
+    const timeline = (selectedCustomer.timeline ?? []).map((entry) => (
+      contentByWorkflowId.has(entry.id)
+        ? { ...entry, documentContent: contentByWorkflowId.get(entry.id) }
+        : entry
+    ));
+    updateCustomer(selectedCustomer.id, { timeline });
   }
 
   function getEditorHtmlForSave() {
@@ -1578,7 +1607,7 @@ function App() {
           {selectedCustomer ? (
             <div className="conversationBody">
               <div className="editorShell">
-                <div className={`editorToolbar ${isMergedWorkflowView ? 'isDisabled' : ''}`}>
+                <div className="editorToolbar">
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('undo')} title="撤销">
                     <Undo2 size={16} />
                   </button>
@@ -1651,7 +1680,7 @@ function App() {
                   key={editorKey}
                   ref={editorRef}
                   className={`messyContent ${isMergedWorkflowView ? 'mergedViewContent' : ''}`}
-                  contentEditable={Boolean(selectedCustomer) && !isMergedWorkflowView}
+                  contentEditable={canEditEditor}
                   suppressContentEditableWarning
                   onInput={syncEditorContent}
                   onMouseDown={handleEditorMouseDown}
@@ -2177,8 +2206,28 @@ function GradeBadge({ grade, compact = false }) {
   );
 }
 
+function normalizeWebsiteUrl(value = '') {
+  const url = value.trim();
+  if (!url) return '';
+  if (/^[a-z][a-z\d+.-]*:/i.test(url)) return url;
+  return `https://${url}`;
+}
+
+function normalizeEmailHref(value = '') {
+  const email = value.trim();
+  if (!email) return '';
+  return `mailto:${email}`;
+}
+
 function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing, editingLabel, updateArchiveDraft, updateArchiveFieldLabel }) {
   const isGrade = fieldKey === 'grade';
+  const fieldValue = archiveCustomer[fieldKey] ?? '';
+  const linkHref = fieldKey === 'website'
+    ? normalizeWebsiteUrl(fieldValue)
+    : fieldKey === 'email'
+      ? normalizeEmailHref(fieldValue)
+      : '';
+
   return (
     <div className={`archiveField ${isGrade ? 'selectInput' : ''} ${editing ? 'editingField' : ''}`}>
       <span className="archiveFieldLabel">
@@ -2213,9 +2262,19 @@ function ArchiveField({ label, defaultLabel, fieldKey, archiveCustomer, editing,
             <option key={grade} value={grade}>{grade} - {gradeMap[grade]}</option>
           ))}
         </select>
+      ) : linkHref && !editing ? (
+        <a
+          className="archiveFieldValueLink"
+          href={linkHref}
+          target={fieldKey === 'website' ? '_blank' : undefined}
+          rel={fieldKey === 'website' ? 'noopener noreferrer' : undefined}
+          title={fieldValue}
+        >
+          {fieldValue}
+        </a>
       ) : (
         <input
-          value={archiveCustomer[fieldKey] ?? ''}
+          value={fieldValue}
           disabled={!editing}
           onChange={(event) => updateArchiveDraft(fieldKey, event.target.value)}
           placeholder="未填写"

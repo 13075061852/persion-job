@@ -1250,9 +1250,15 @@ button {
 
 .mergedWorkflowBody {
   color: #2d3741;
-  min-height: 120px;
+  min-height: 32px;
+  outline: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.mergedWorkflowBody p,
+.mergedWorkflowBody div {
+  margin: 0;
 }
 
 .mergedWorkflowBody > :first-child {
@@ -1265,7 +1271,8 @@ button {
 
 .mergedWorkflowBody > p:empty,
 .mergedWorkflowBody > div:empty {
-  display: none;
+  display: block;
+  min-height: 1.65em;
 }
 
 .messyContent a {
@@ -1687,7 +1694,8 @@ button {
 }
 
 .archiveField input,
-.archiveField select {
+.archiveField select,
+.archiveFieldValueLink {
   height: 100%;
   min-height: 42px;
   padding: 0 10px;
@@ -1696,6 +1704,22 @@ button {
   color: #333333;
   background: rgba(255, 255, 255, 0.56);
   font-size: 13px;
+}
+
+.archiveFieldValueLink {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  color: #0b6f9f;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archiveFieldValueLink:hover {
+  color: #075985;
+  text-decoration: underline;
 }
 
 .archiveField.editingField input,
