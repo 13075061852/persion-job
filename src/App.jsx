@@ -55,6 +55,8 @@ const CUSTOMER_GRADES = ['A', 'B', 'C', 'D'];
 const EDITOR_FONT_SIZES = ['12px', '14px', '16px', '18px', '22px', '28px', '36px'];
 const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#7c3aed'];
 const EDITOR_BACKGROUND_COLORS = ['#fff7ad', '#fee2e2', '#dbeafe', '#dcfce7', '#f3e8ff', '#ffffff'];
+const DEFAULT_EDITOR_TEXT_COLOR = EDITOR_TEXT_COLORS[0];
+const DEFAULT_EDITOR_BACKGROUND_COLOR = EDITOR_BACKGROUND_COLORS[5];
 const EDITOR_IMAGE_MIN_WIDTH = 80;
 const EDITOR_IMAGE_WHEEL_STEP = 32;
 const DEFAULT_LEFT_PANEL_WIDTH = 360;
@@ -397,6 +399,8 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(initialLayout.rightPanelWidth);
   const [activeResizer, setActiveResizer] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [activeEditorTextColor, setActiveEditorTextColor] = useState(DEFAULT_EDITOR_TEXT_COLOR);
+  const [activeEditorBackgroundColor, setActiveEditorBackgroundColor] = useState(DEFAULT_EDITOR_BACKGROUND_COLOR);
   const boardRef = useRef(null);
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
@@ -1007,7 +1011,17 @@ function App() {
     const selection = window.getSelection();
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
-    if (range.collapsed) return;
+    if (range.collapsed) {
+      document.execCommand('styleWithCSS', false, true);
+      if (style.color) {
+        document.execCommand('foreColor', false, style.color);
+      }
+      if (style.backgroundColor) {
+        document.execCommand('hiliteColor', false, style.backgroundColor);
+      }
+      saveEditorSelection();
+      return;
+    }
     const styledSpan = document.createElement('span');
     Object.assign(styledSpan.style, style);
     styledSpan.appendChild(range.extractContents());
@@ -1020,6 +1034,16 @@ function App() {
     selection.addRange(nextRange);
     saveEditorSelection();
     syncEditorContent();
+  }
+
+  function applyEditorTextColor(color) {
+    setActiveEditorTextColor(color);
+    applyEditorStyle({ color });
+  }
+
+  function applyEditorBackgroundColor(backgroundColor) {
+    setActiveEditorBackgroundColor(backgroundColor);
+    applyEditorStyle({ backgroundColor });
   }
 
   function getClosestStyledItalic(node) {
@@ -1636,15 +1660,17 @@ function App() {
                     label="文字颜色"
                     trigger="A"
                     colors={EDITOR_TEXT_COLORS}
+                    currentColor={activeEditorTextColor}
                     swatchClassName="textSwatch"
-                    onPick={(color) => applyEditorStyle({ color })}
+                    onPick={applyEditorTextColor}
                   />
                   <EditorColorPicker
                     label="背景色"
                     trigger="□"
                     colors={EDITOR_BACKGROUND_COLORS}
+                    currentColor={activeEditorBackgroundColor}
                     swatchClassName="backgroundSwatch"
-                    onPick={(backgroundColor) => applyEditorStyle({ backgroundColor })}
+                    onPick={applyEditorBackgroundColor}
                   />
                   <span />
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => applyEditorCommand('insertUnorderedList')} title="圆点列表">
@@ -1984,12 +2010,13 @@ function PanelTitle({ title, icon, meta, action, collapsed = false, onToggle, to
   );
 }
 
-function EditorColorPicker({ label, trigger, colors, swatchClassName, onPick }) {
+function EditorColorPicker({ label, trigger, colors, currentColor, swatchClassName, onPick }) {
   return (
     <div className="toolbarColorPicker" title={label}>
       <button
         type="button"
         className={`toolbarColorTrigger ${swatchClassName}`}
+        style={{ '--active-color': currentColor }}
         onMouseDown={(event) => event.preventDefault()}
         aria-label={label}
       >

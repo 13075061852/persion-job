@@ -1109,13 +1109,22 @@ button {
   font-weight: 900;
 }
 
-.toolbarColorTrigger.backgroundSwatch {
+.toolbarColorTrigger.textSwatch {
   color: #ffffff;
-  background: #111111;
+  background: var(--active-color);
+}
+
+.toolbarColorTrigger.textSwatch::after {
+  content: none;
+}
+
+.toolbarColorTrigger.backgroundSwatch {
+  color: #111111;
+  background: var(--active-color);
 }
 
 .toolbarColorTrigger svg {
-  color: currentColor;
+  color: inherit;
 }
 
 .toolbarColorPopover {
