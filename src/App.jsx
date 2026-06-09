@@ -49,6 +49,8 @@ import {
 } from 'lucide-react';
 
 const STORAGE_KEY = 'personal-workflow-manager-v1';
+const CUSTOMER_DB_NAME = 'personal-workflow-manager-db';
+const CUSTOMER_DB_STORE = 'records';
 const LAYOUT_STORAGE_KEY = 'personal-workflow-manager-layout-v1';
 const VIEW_STATE_STORAGE_KEY = 'personal-workflow-manager-view-state-v1';
 const GLOBAL_FIELD_LABELS_STORAGE_KEY = 'personal-workflow-manager-global-field-labels-v1';
@@ -69,6 +71,7 @@ const RESIZER_WIDTH = 10;
 const MIN_LEFT_PANEL_WIDTH = 260;
 const MIN_RIGHT_PANEL_WIDTH = 360;
 const MIN_CENTER_PANEL_WIDTH = 360;
+const LOCAL_STORAGE_SAFE_CUSTOMER_SIZE = 1_500_000;
 
 const gradeMap = {
   A: '非常优质',
@@ -195,7 +198,55 @@ function readInitialCustomers() {
 }
 
 function saveCustomers(customers) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(customers));
+  saveCustomersToIndexedDb(customers).catch((error) => {
+    console.error('Failed to save customers to IndexedDB', error);
+  });
+
+  try {
+    const serializedCustomers = JSON.stringify(customers);
+    if (serializedCustomers.length <= LOCAL_STORAGE_SAFE_CUSTOMER_SIZE) {
+      localStorage.setItem(STORAGE_KEY, serializedCustomers);
+      return;
+    }
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (error) {
+    localStorage.removeItem(STORAGE_KEY);
+    console.warn('Skipped localStorage customer backup because data is too large', error);
+  }
+}
+
+function openCustomerDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(CUSTOMER_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(CUSTOMER_DB_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveCustomersToIndexedDb(customers) {
+  const db = await openCustomerDb();
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(CUSTOMER_DB_STORE, 'readwrite');
+    transaction.objectStore(CUSTOMER_DB_STORE).put(customers, STORAGE_KEY);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+  db.close();
+}
+
+async function readCustomersFromIndexedDb() {
+  const db = await openCustomerDb();
+  const customers = await new Promise((resolve, reject) => {
+    const transaction = db.transaction(CUSTOMER_DB_STORE, 'readonly');
+    const request = transaction.objectStore(CUSTOMER_DB_STORE).get(STORAGE_KEY);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return Array.isArray(customers) ? normalizeCustomers(customers) : null;
 }
 
 function normalizeCustomers(customers) {
@@ -361,6 +412,12 @@ function dataUrlToArrayBuffer(dataUrl = '') {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes.buffer;
+}
+
+function dataUrlToBlobUrl(dataUrl = '', fallbackType = 'application/octet-stream') {
+  const type = dataUrl.match(/^data:([^;,]+)/)?.[1] || fallbackType;
+  const arrayBuffer = dataUrlToArrayBuffer(dataUrl);
+  return URL.createObjectURL(new Blob([arrayBuffer], { type }));
 }
 
 function escapeHtml(value = '') {
@@ -590,9 +647,37 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let canceled = false;
+
+    readCustomersFromIndexedDb()
+      .then((storedCustomers) => {
+        if (canceled || !storedCustomers) return;
+        setCustomers(storedCustomers);
+        if (!storedCustomers.some((customer) => customer.id === selectedId)) {
+          setSelectedId(storedCustomers[0]?.id ?? '');
+          setSelectedWorkflowId('');
+          setSelectedWorkflowIds([]);
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to load customers from IndexedDB', error);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     setArchiveEditing(false);
     setArchiveDraft(null);
   }, [selectedCustomer?.id]);
+
+  useEffect(() => () => {
+    if (attachmentPreview?.previewUrl) {
+      URL.revokeObjectURL(attachmentPreview.previewUrl);
+    }
+  }, [attachmentPreview?.previewUrl]);
 
   useEffect(() => {
     saveLayout({ leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth });
@@ -881,7 +966,9 @@ function App() {
   }
 
   function updateCustomer(id, patch) {
-    commitCustomers(customers.map((customer) => (customer.id === id ? { ...customer, ...patch } : customer)));
+    commitCustomersFromUpdater((currentCustomers) => (
+      currentCustomers.map((customer) => (customer.id === id ? { ...customer, ...patch } : customer))
+    ));
   }
 
   function selectCustomer(id) {
@@ -943,10 +1030,13 @@ function App() {
 
   function updateWorkflow(workflowId, patch) {
     if (!selectedCustomer) return;
-    const timeline = (selectedCustomer.timeline ?? []).map((entry) =>
-      entry.id === workflowId ? { ...entry, ...patch } : entry
-    );
-    updateCustomer(selectedCustomer.id, { timeline });
+    commitCustomersFromUpdater((currentCustomers) => currentCustomers.map((customer) => {
+      if (customer.id !== selectedCustomer.id) return customer;
+      const timeline = (customer.timeline ?? []).map((entry) =>
+        entry.id === workflowId ? { ...entry, ...patch } : entry
+      );
+      return { ...customer, timeline };
+    }));
   }
 
   function reorderCustomers(activeId, overId) {
@@ -1526,7 +1616,8 @@ function App() {
 
     try {
       if (kind === 'pdf') {
-        setAttachmentPreview({ name, type, size, url, kind, status: 'ready' });
+        const previewUrl = dataUrlToBlobUrl(url, type || 'application/pdf');
+        setAttachmentPreview({ name, type, size, url, previewUrl, kind, status: 'ready' });
         return;
       }
 
@@ -2471,7 +2562,12 @@ function App() {
       {attachmentPreview && (
         <AttachmentPreviewDialog
           preview={attachmentPreview}
-          onClose={() => setAttachmentPreview(null)}
+          onClose={() => {
+            if (attachmentPreview.previewUrl) {
+              URL.revokeObjectURL(attachmentPreview.previewUrl);
+            }
+            setAttachmentPreview(null);
+          }}
         />
       )}
     </main>
@@ -2877,7 +2973,7 @@ function AttachmentPreviewDialog({ preview, onClose }) {
           {preview.status === 'error' && <div className="attachmentPreviewEmpty">{preview.message || '预览失败'}</div>}
           {preview.status === 'unsupported' && <div className="attachmentPreviewEmpty">当前格式暂不支持网页预览，请下载后查看。</div>}
           {preview.status === 'ready' && preview.kind === 'pdf' && (
-            <iframe src={preview.url} title={preview.name} />
+            <iframe src={preview.previewUrl || preview.url} title={preview.name} />
           )}
           {preview.status === 'ready' && preview.kind === 'word' && (
             <div className="attachmentWordPreview" dangerouslySetInnerHTML={{ __html: preview.html }} />
