@@ -986,11 +986,8 @@ function App() {
       : '';
     const nextCustomers = saveCurrentEditorContent();
     if (mode === 'merged') {
-      const nextSelectedIds = selectedWorkflowId
-        ? [selectedWorkflowId]
-        : selectedCustomer?.timeline?.[0]?.id
-          ? [selectedCustomer.timeline[0].id]
-          : [];
+      const nextCustomer = nextCustomers.find((customer) => customer.id === selectedCustomer?.id);
+      const nextSelectedIds = (nextCustomer?.timeline ?? []).map((workflow) => workflow.id);
       setSelectedWorkflowIds(nextSelectedIds);
     } else {
       const nextCustomer = nextCustomers.find((customer) => customer.id === selectedCustomer?.id);
