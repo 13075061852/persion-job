@@ -1622,9 +1622,7 @@ function App() {
 
       const arrayBuffer = dataUrlToArrayBuffer(url);
       if (kind === 'word' && name.toLowerCase().endsWith('.docx')) {
-        const mammoth = await import('mammoth/mammoth.browser');
-        const result = await mammoth.convertToHtml({ arrayBuffer });
-        setAttachmentPreview({ name, type, size, url, kind, status: 'ready', html: result.value || '<p>没有可预览内容</p>' });
+        setAttachmentPreview({ name, type, size, url, kind, status: 'ready', docxBuffer: arrayBuffer });
         return;
       }
 
@@ -2954,6 +2952,37 @@ function ImportBackupDialog({ stats, onCancel, onOverwrite, onAppend }) {
 
 function AttachmentPreviewDialog({ preview, onClose }) {
   const downloadName = preview.name || '附件';
+  const wordPreviewRef = useRef(null);
+
+  useEffect(() => {
+    if (preview.status !== 'ready' || preview.kind !== 'word' || !preview.docxBuffer || !wordPreviewRef.current) return;
+
+    let canceled = false;
+    const container = wordPreviewRef.current;
+    container.innerHTML = '';
+
+    import('docx-preview')
+      .then(({ renderAsync }) => renderAsync(preview.docxBuffer, container, null, {
+        className: 'docxRenderedDocument',
+        ignoreFonts: false,
+        ignoreHeight: false,
+        ignoreWidth: false,
+        inWrapper: false,
+        renderChanges: false,
+        renderFooters: true,
+        renderHeaders: true,
+      }))
+      .catch((error) => {
+        if (!canceled) {
+          container.innerHTML = `<div class="attachmentPreviewEmpty">${escapeHtml(error instanceof Error ? error.message : 'Word 预览失败')}</div>`;
+        }
+      });
+
+    return () => {
+      canceled = true;
+      container.innerHTML = '';
+    };
+  }, [preview.docxBuffer, preview.kind, preview.status]);
 
   return (
     <div className="confirmOverlay attachmentPreviewOverlay" role="presentation" onMouseDown={onClose}>
@@ -2975,7 +3004,7 @@ function AttachmentPreviewDialog({ preview, onClose }) {
             <iframe src={preview.previewUrl || preview.url} title={preview.name} />
           )}
           {preview.status === 'ready' && preview.kind === 'word' && (
-            <div className="attachmentWordPreview" dangerouslySetInnerHTML={{ __html: preview.html }} />
+            <div className="attachmentWordPreview" ref={wordPreviewRef} />
           )}
         </div>
       </div>
