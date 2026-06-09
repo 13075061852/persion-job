@@ -2237,7 +2237,7 @@ function App() {
             <Database size={24} />
           </div>
           <div>
-            <h1>个人工作流管理</h1>
+            <h1>James CHEN</h1>
           </div>
         </div>
         <div className="topActions">
