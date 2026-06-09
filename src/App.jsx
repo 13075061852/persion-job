@@ -1943,11 +1943,13 @@ function App() {
           </div>
         </div>
         <div className="topActions">
-          <button type="button" className="topIconButton" title="导出数据" onClick={exportBackupData}>
+          <button type="button" className="topTextButton" title="备份数据" onClick={exportBackupData}>
             <Download size={19} />
+            <span>备份数据</span>
           </button>
-          <button type="button" className="topIconButton" title="导入数据" onClick={() => backupInputRef.current?.click()}>
+          <button type="button" className="topTextButton" title="导入数据" onClick={() => backupInputRef.current?.click()}>
             <Upload size={19} />
+            <span>导入数据</span>
           </button>
           <input
             ref={backupInputRef}
@@ -2316,6 +2318,11 @@ function App() {
                           selectSingleWorkflow(item.id);
                         }}
                         onKeyDown={(event) => {
+                          if (event.key === 'Delete' || event.key === 'Backspace') {
+                            event.preventDefault();
+                            deleteWorkflow(item.id);
+                            return;
+                          }
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
                             if (isMergedWorkflowView) {
@@ -2617,6 +2624,11 @@ function CustomerRowCard({
       className={`customerRow ${isSelected ? 'selected' : ''} ${dragging ? 'dragging' : ''} ${overlay ? 'overlay' : ''} ${className}`.trim()}
       onClick={() => onSelect(customer.id)}
       onKeyDown={(event) => {
+        if (event.key === 'Delete' || event.key === 'Backspace') {
+          event.preventDefault();
+          onDelete(customer);
+          return;
+        }
         if (event.key === 'Enter' || event.key === ' ') onSelect(customer.id);
       }}
       role="button"

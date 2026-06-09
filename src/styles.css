@@ -193,7 +193,22 @@ button {
   background: transparent;
 }
 
+.topTextButton {
+  height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 8px;
+  color: #333333;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 13px;
+  font-weight: 760;
+}
+
 .topIconButton:hover,
+.topTextButton:hover,
 .collapseButton:hover {
   color: var(--blue);
   background: rgba(255, 255, 255, 0.72);
