@@ -197,21 +197,59 @@ function readInitialCustomers() {
   }
 }
 
+function stripAttachmentDataForLocalStorage(customers) {
+  // Remove base64 attachment data to reduce size for localStorage fallback.
+  // The full data is preserved in IndexedDB.
+  return customers.map((customer) => ({
+    ...customer,
+    timeline: (customer.timeline ?? []).map((item) => {
+      if (!item.documentContent) return item;
+      // Remove data URLs from documentContent to save space
+      const stripped = item.documentContent.replace(
+        /data:[^"'\s>)]+/g,
+        '[附件-大数据已压缩]'
+      );
+      return { ...item, documentContent: stripped };
+    }),
+  }));
+}
+
 function saveCustomers(customers) {
+  if (!Array.isArray(customers)) return;
+
+  // Primary: save to IndexedDB (async, handles large data)
   saveCustomersToIndexedDb(customers).catch((error) => {
-    console.error('Failed to save customers to IndexedDB', error);
+    console.error('Failed to save customers to IndexedDB — data may be lost on reload', error);
   });
 
+  // Fallback: save to localStorage for faster cold-start reads.
+  // If data is too large, we still keep IndexedDB as the primary store.
   try {
     const serializedCustomers = JSON.stringify(customers);
     if (serializedCustomers.length <= LOCAL_STORAGE_SAFE_CUSTOMER_SIZE) {
       localStorage.setItem(STORAGE_KEY, serializedCustomers);
       return;
     }
+    // Data too large for full save — try stripped version as emergency fallback
+    const stripped = stripAttachmentDataForLocalStorage(customers);
+    const serializedStripped = JSON.stringify(stripped);
+    if (serializedStripped.length <= LOCAL_STORAGE_SAFE_CUSTOMER_SIZE) {
+      localStorage.setItem(STORAGE_KEY, serializedStripped);
+      console.warn(
+        `Customer data (${formatFileSize(serializedCustomers.length)}) exceeds localStorage limit. ` +
+        `Stripped version (${formatFileSize(serializedStripped.length)}) saved as fallback. ` +
+        'Full data is stored in IndexedDB.'
+      );
+      return;
+    }
     localStorage.removeItem(STORAGE_KEY);
+    console.warn(
+      `Customer data (${formatFileSize(serializedCustomers.length)}) exceeds localStorage safe limit. ` +
+      'Data is stored in IndexedDB only.'
+    );
   } catch (error) {
     localStorage.removeItem(STORAGE_KEY);
-    console.warn('Skipped localStorage customer backup because data is too large', error);
+    console.warn('Failed to save customers to localStorage', error);
   }
 }
 
@@ -225,30 +263,43 @@ function openCustomerDb() {
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+    request.onblocked = () => {
+      console.warn('IndexedDB open blocked — another tab may have the database open. Close other tabs and refresh.');
+      reject(new Error('Database blocked by another connection'));
+    };
   });
 }
 
 async function saveCustomersToIndexedDb(customers) {
   const db = await openCustomerDb();
-  await new Promise((resolve, reject) => {
-    const transaction = db.transaction(CUSTOMER_DB_STORE, 'readwrite');
-    transaction.objectStore(CUSTOMER_DB_STORE).put(customers, STORAGE_KEY);
-    transaction.oncomplete = resolve;
-    transaction.onerror = () => reject(transaction.error);
-  });
-  db.close();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(CUSTOMER_DB_STORE, 'readwrite');
+      transaction.objectStore(CUSTOMER_DB_STORE).put(customers, STORAGE_KEY);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(new Error('IndexedDB transaction aborted'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 async function readCustomersFromIndexedDb() {
   const db = await openCustomerDb();
-  const customers = await new Promise((resolve, reject) => {
-    const transaction = db.transaction(CUSTOMER_DB_STORE, 'readonly');
-    const request = transaction.objectStore(CUSTOMER_DB_STORE).get(STORAGE_KEY);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  db.close();
-  return Array.isArray(customers) ? normalizeCustomers(customers) : null;
+  try {
+    const customers = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(CUSTOMER_DB_STORE, 'readonly');
+      const request = transaction.objectStore(CUSTOMER_DB_STORE).get(STORAGE_KEY);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return Array.isArray(customers) ? normalizeCustomers(customers) : null;
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
 }
 
 function normalizeCustomers(customers) {
@@ -523,6 +574,8 @@ function App() {
   const initialLayout = readInitialLayout();
   const initialViewState = readInitialViewState();
   const [customers, setCustomers] = useState(readInitialCustomers);
+  const customersRef = useRef(customers);
+  const userModifiedSinceLoad = useRef(false);
   const [globalFieldLabels, setGlobalFieldLabels] = useState(readInitialGlobalFieldLabels);
   const [selectedId, setSelectedId] = useState(() => initialViewState.selectedId || customers[0]?.id || '');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(() => initialViewState.selectedWorkflowId || '');
@@ -592,6 +645,14 @@ function App() {
     : selectedWorkflow
       ? selectedWorkflow.documentContent ?? selectedWorkflow.content ?? ''
       : selectedCustomer?.messyNotes ?? '';
+  const mergedWorkflowMetaKey = isMergedWorkflowView
+    ? mergedWorkflows.map((item) => [
+      item.id,
+      item.date ?? '',
+      item.title ?? item.content ?? '沟通记录',
+      item.status ?? '',
+    ].join(':')).join('|')
+    : '';
   const editorKey = isMergedWorkflowView
     ? `merged:${selectedCustomer?.id ?? 'empty'}:${selectedWorkflowIds.join(',')}`
     : selectedWorkflow
@@ -624,6 +685,10 @@ function App() {
   }), [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth]);
 
   useEffect(() => {
+    customersRef.current = customers;
+  }, [customers]);
+
+  useEffect(() => {
     if (!editorRef.current || isMergedWorkflowView) return;
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
@@ -637,7 +702,7 @@ function App() {
     prepareEditorImages();
     prepareEditorAttachments();
     editorSelectionRef.current = null;
-  }, [editorKey, isMergedWorkflowView]);
+  }, [editorKey, isMergedWorkflowView, mergedWorkflowMetaKey]);
 
   useEffect(() => () => {
     removeCustomImageDragListeners();
@@ -648,12 +713,46 @@ function App() {
     document.body.style.removeProperty('user-select');
   }, []);
 
+  // Emergency flush: save latest data to localStorage before the tab closes.
+  // IndexedDB writes are async and may not complete in time, so we also
+  // sync to localStorage synchronously on beforeunload as a safety net.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      try {
+        const currentCustomers = customersRef.current;
+        const serialized = JSON.stringify(currentCustomers);
+        if (serialized.length <= LOCAL_STORAGE_SAFE_CUSTOMER_SIZE) {
+          localStorage.setItem(STORAGE_KEY, serialized);
+        }
+        localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
+          leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth,
+        }));
+        localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify({
+          selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode,
+        }));
+        localStorage.setItem(GLOBAL_FIELD_LABELS_STORAGE_KEY, JSON.stringify(globalFieldLabels));
+      } catch (error) {
+        console.warn('beforeunload save failed', error);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth,
+    selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode,
+    globalFieldLabels]);
+
   useEffect(() => {
     let canceled = false;
 
     readCustomersFromIndexedDb()
       .then((storedCustomers) => {
         if (canceled || !storedCustomers) return;
+        // If the user has already modified data before IndexedDB loaded,
+        // don't overwrite their changes to prevent data loss.
+        if (userModifiedSinceLoad.current) {
+          console.warn('Skipped IndexedDB overwrite because user has already modified data');
+          return;
+        }
         setCustomers(storedCustomers);
         if (!storedCustomers.some((customer) => customer.id === selectedId)) {
           setSelectedId(storedCustomers[0]?.id ?? '');
@@ -770,17 +869,22 @@ function App() {
   }, [activeResizer, leftCollapsed, leftPanelWidth, rightCollapsed, rightPanelWidth]);
 
   function commitCustomers(nextCustomers) {
+    userModifiedSinceLoad.current = true;
     setCustomers(nextCustomers);
+    customersRef.current = nextCustomers;
     saveCustomers(nextCustomers);
   }
 
   function commitCustomersFromUpdater(updater) {
-    let nextCustomers = customers;
+    userModifiedSinceLoad.current = true;
+    let nextCustomers = customersRef.current;
     setCustomers((currentCustomers) => {
       nextCustomers = updater(currentCustomers);
-      saveCustomers(nextCustomers);
+      customersRef.current = nextCustomers;
       return nextCustomers;
     });
+    // Save outside the setState updater to avoid React anti-pattern
+    saveCustomers(nextCustomers);
     return nextCustomers;
   }
 
@@ -789,7 +893,7 @@ function App() {
     saveGlobalFieldLabels(nextFieldLabels);
   }
 
-  function getCustomersWithCurrentEditorContent(sourceCustomers = customers) {
+  function getCustomersWithCurrentEditorContent(sourceCustomers = customersRef.current) {
     if (!editorRef.current || !selectedCustomer) return sourceCustomers;
 
     if (isMergedWorkflowView) {
@@ -860,12 +964,25 @@ function App() {
     return section.getAttribute('data-workflow-id') ?? '';
   }
 
+  const MAX_EXPORT_SIZE_WARNING = 100 * 1024 * 1024; // 100MB
+
   function exportBackupData() {
     const backupCustomers = getCustomersWithCurrentEditorContent();
     const layout = { leftCollapsed, rightCollapsed, leftPanelWidth, rightPanelWidth };
     const viewState = { selectedId, selectedWorkflowId, selectedWorkflowIds, workflowViewMode };
     const payload = makeBackupPayload({ customers: backupCustomers, globalFieldLabels, layout, viewState });
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const jsonString = JSON.stringify(payload, null, 2);
+
+    // Warn if the export is very large (e.g. many base64 attachments)
+    if (jsonString.length > MAX_EXPORT_SIZE_WARNING) {
+      const proceed = window.confirm(
+        `备份文件较大（约 ${formatFileSize(jsonString.length)}），下载可能需要一些时间。是否继续？\n\n` +
+        '提示：如果备份文件过大，建议清理编辑器中的大型附件后再导出。'
+      );
+      if (!proceed) return;
+    }
+
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     const stamp = new Date().toISOString().slice(0, 10);
@@ -874,7 +991,8 @@ function App() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    // Delay URL revocation to ensure the download starts
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function applyImportedBackup(payload, mode = 'overwrite', preparedCustomers = null) {
@@ -940,18 +1058,41 @@ function App() {
     setPendingImport(null);
   }
 
+  const MAX_IMPORT_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
   function importBackupData(event) {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
 
+    if (file.size > MAX_IMPORT_FILE_SIZE) {
+      window.alert(`导入文件过大（${formatFileSize(file.size)}），请选择小于 ${formatFileSize(MAX_IMPORT_FILE_SIZE)} 的文件`);
+      return;
+    }
+
+    if (file.size === 0) {
+      window.alert('导入文件为空，请检查备份文件');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const payload = JSON.parse(String(reader.result ?? ''));
+        const raw = String(reader.result ?? '');
+        if (!raw.trim()) {
+          throw new Error('备份文件内容为空');
+        }
+        const payload = JSON.parse(raw);
+        if (payload === null || typeof payload !== 'object') {
+          throw new Error('备份文件格式不正确，应为 JSON 对象');
+        }
         const importedCustomers = normalizeCustomers(Array.isArray(payload) ? payload : payload?.customers);
         if (importedCustomers.length === 0) {
           throw new Error('备份文件里没有可导入的客户数据');
+        }
+        // Cap imported customers to prevent memory issues
+        if (importedCustomers.length > 100000) {
+          throw new Error('导入的客户数量超过上限（100000），请检查备份文件');
         }
         const currentCustomers = getCustomersWithCurrentEditorContent();
         setPendingImport({
@@ -960,10 +1101,14 @@ function App() {
           stats: getImportStats(importedCustomers, currentCustomers),
         });
       } catch (error) {
+        if (error instanceof SyntaxError) {
+          window.alert('备份文件格式错误，无法解析 JSON 数据');
+          return;
+        }
         window.alert(error instanceof Error ? error.message : '导入失败，请检查备份文件');
       }
     };
-    reader.onerror = () => window.alert('读取备份文件失败');
+    reader.onerror = () => window.alert('读取备份文件失败，请重试');
     reader.readAsText(file, 'UTF-8');
   }
 
@@ -1191,19 +1336,19 @@ function App() {
     if (!selectedCustomer) return;
     const contentHtml = getEditorHtmlForSave().trim();
     const contentText = getPlainTextFromHtml(contentHtml).trim();
-    if (!contentText && !contentHtml.includes('<img')) return;
+    const title = noteTitleDraft.trim() || '沟通记录';
+    if (!noteTitleDraft.trim() && !contentText && !contentHtml.includes('<img')) return;
 
     const now = new Date();
     const date = now.toISOString().slice(0, 10);
     const stamp = now.toLocaleString('zh-CN', { hour12: false });
-    const title = noteTitleDraft.trim() || '沟通记录';
-    const content = contentText || '[图片内容]';
+    const content = contentText || title;
     const item = {
       id: `t-${Date.now()}`,
       date,
       title,
       content,
-      documentContent: contentHtml,
+      documentContent: '',
       status: '跟进中',
     };
     const nextNote = `${selectedCustomer.messyNotes ? `${selectedCustomer.messyNotes}\n\n` : ''}[${stamp}] ${title}\n${content}`;
@@ -1599,9 +1744,22 @@ function App() {
     event.target.value = '';
     if (files.length === 0) return;
 
+    // Limit total attachment size to prevent memory issues
+    const MAX_TOTAL_ATTACHMENT_SIZE = 100 * 1024 * 1024; // 100MB
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalSize > MAX_TOTAL_ATTACHMENT_SIZE) {
+      window.alert(`附件总大小（${formatFileSize(totalSize)}）超过上限 ${formatFileSize(MAX_TOTAL_ATTACHMENT_SIZE)}，请分批上传`);
+      return;
+    }
+
     for (const file of files) {
-      const url = await readFileAsDataUrl(file);
-      if (url) insertEditorAttachment(file, url);
+      try {
+        const url = await readFileAsDataUrl(file);
+        if (url) insertEditorAttachment(file, url);
+      } catch (error) {
+        console.error('Failed to attach file', file.name, error);
+        window.alert(`附件「${file.name}」读取失败，已跳过`);
+      }
     }
   }
 
@@ -1690,17 +1848,27 @@ function App() {
     saveEditorSelection();
   }
 
-  function handleEditorImageSelected(event) {
-    const file = event.target.files?.[0];
+  async function handleEditorImageSelected(event) {
+    const files = Array.from(event.target.files ?? []);
     event.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const imageUrl = typeof reader.result === 'string' ? reader.result : '';
-      if (imageUrl) insertEditorImage(imageUrl);
-    };
-    reader.readAsDataURL(file);
+    const MAX_TOTAL_IMAGE_SIZE = 100 * 1024 * 1024;
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalSize > MAX_TOTAL_IMAGE_SIZE) {
+      window.alert(`图片总大小（${formatFileSize(totalSize)}）超过上限 ${formatFileSize(MAX_TOTAL_IMAGE_SIZE)}，请分批上传`);
+      return;
+    }
+
+    for (const file of files) {
+      try {
+        const imageUrl = await readFileAsDataUrl(file);
+        if (imageUrl) insertEditorImage(imageUrl);
+      } catch (error) {
+        console.error('Failed to insert image', file.name, error);
+        window.alert(`图片「${file.name}」读取失败，已跳过`);
+      }
+    }
   }
 
   function handleEditorClick(event) {
@@ -2021,12 +2189,11 @@ function App() {
     const timeline = selectedCustomer.timeline ?? [];
     const nextTimeline = timeline.filter((item) => item.id !== workflowId);
     const nextSelectedWorkflow = nextTimeline[0]?.id ?? '';
+    // Only update timeline and lastFollowDate — never overwrite messyNotes
+    // when deleting a workflow, as they are separate data fields.
     updateCustomer(selectedCustomer.id, {
       timeline: nextTimeline,
       lastFollowDate: nextTimeline[0]?.date ?? selectedCustomer.lastFollowDate,
-      messyNotes: selectedWorkflow?.id === workflowId
-        ? nextTimeline[0]?.documentContent ?? nextTimeline[0]?.content ?? ''
-        : selectedCustomer.messyNotes,
     });
     setSelectedWorkflowId(nextSelectedWorkflow);
     setSelectedWorkflowIds((current) => current.filter((item) => item !== workflowId));
@@ -2243,6 +2410,7 @@ function App() {
                     ref={imageInputRef}
                     type="file"
                     accept="image/*"
+                    multiple
                     hidden
                     onChange={handleEditorImageSelected}
                   />
