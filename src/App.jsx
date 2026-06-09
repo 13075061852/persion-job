@@ -687,6 +687,16 @@ function App() {
     saveCustomers(nextCustomers);
   }
 
+  function commitCustomersFromUpdater(updater) {
+    let nextCustomers = customers;
+    setCustomers((currentCustomers) => {
+      nextCustomers = updater(currentCustomers);
+      saveCustomers(nextCustomers);
+      return nextCustomers;
+    });
+    return nextCustomers;
+  }
+
   function commitGlobalFieldLabels(nextFieldLabels) {
     setGlobalFieldLabels(nextFieldLabels);
     saveGlobalFieldLabels(nextFieldLabels);
@@ -735,10 +745,32 @@ function App() {
     });
   }
 
+  function readMergedWorkflowContentFromEditor() {
+    if (!editorRef.current) return new Map();
+
+    return Array.from(editorRef.current.querySelectorAll('.mergedWorkflowSection')).reduce((contentMap, section) => {
+      const workflowId = section.getAttribute('data-workflow-id');
+      const body = section.querySelector('.mergedWorkflowBody');
+      if (workflowId && body) {
+        contentMap.set(workflowId, body.innerHTML);
+      }
+      return contentMap;
+    }, new Map());
+  }
+
   function saveCurrentEditorContent() {
     const nextCustomers = getCustomersWithCurrentEditorContent();
     commitCustomers(nextCustomers);
     return nextCustomers;
+  }
+
+  function getWorkflowIdFromEditorRange(range) {
+    if (!range || !editorRef.current) return '';
+    const node = range.commonAncestorContainer;
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const section = element?.closest?.('.mergedWorkflowSection');
+    if (!section || !editorRef.current.contains(section)) return '';
+    return section.getAttribute('data-workflow-id') ?? '';
   }
 
   function exportBackupData() {
@@ -862,7 +894,10 @@ function App() {
 
   function changeWorkflowViewMode(mode) {
     if (mode === workflowViewMode) return;
-    saveCurrentEditorContent();
+    const focusedMergedWorkflowId = isMergedWorkflowView
+      ? getWorkflowIdFromEditorRange(editorSelectionRef.current)
+      : '';
+    const nextCustomers = saveCurrentEditorContent();
     if (mode === 'merged') {
       const nextSelectedIds = selectedWorkflowId
         ? [selectedWorkflowId]
@@ -870,8 +905,15 @@ function App() {
           ? [selectedCustomer.timeline[0].id]
           : [];
       setSelectedWorkflowIds(nextSelectedIds);
-    } else if (!selectedWorkflowId && selectedWorkflowIds[0]) {
-      setSelectedWorkflowId(selectedWorkflowIds[0]);
+    } else {
+      const nextCustomer = nextCustomers.find((customer) => customer.id === selectedCustomer?.id);
+      const nextWorkflowId = focusedMergedWorkflowId
+        || (selectedWorkflowIds.includes(selectedWorkflowId) ? selectedWorkflowId : '')
+        || selectedWorkflowIds[0]
+        || selectedWorkflowId
+        || nextCustomer?.timeline?.[0]?.id
+        || '';
+      setSelectedWorkflowId(nextWorkflowId);
     }
     setWorkflowViewMode(mode);
     setEditingWorkflowTitleId('');
@@ -1106,26 +1148,18 @@ function App() {
   function updateMergedWorkflowContent() {
     if (!selectedCustomer || !editorRef.current) return;
 
-    const sections = Array.from(editorRef.current.querySelectorAll('.mergedWorkflowSection'));
-    if (sections.length === 0) return;
-
-    const contentByWorkflowId = sections.reduce((contentMap, section) => {
-      const workflowId = section.getAttribute('data-workflow-id');
-      const body = section.querySelector('.mergedWorkflowBody');
-      if (workflowId && body) {
-        contentMap.set(workflowId, body.innerHTML);
-      }
-      return contentMap;
-    }, new Map());
-
+    const contentByWorkflowId = readMergedWorkflowContentFromEditor();
     if (contentByWorkflowId.size === 0) return;
 
-    const timeline = (selectedCustomer.timeline ?? []).map((entry) => (
-      contentByWorkflowId.has(entry.id)
-        ? { ...entry, documentContent: contentByWorkflowId.get(entry.id) }
-        : entry
-    ));
-    updateCustomer(selectedCustomer.id, { timeline });
+    commitCustomersFromUpdater((currentCustomers) => currentCustomers.map((customer) => {
+      if (customer.id !== selectedCustomer.id) return customer;
+      const timeline = (customer.timeline ?? []).map((entry) => (
+        contentByWorkflowId.has(entry.id)
+          ? { ...entry, documentContent: contentByWorkflowId.get(entry.id) }
+          : entry
+      ));
+      return { ...customer, timeline };
+    }));
   }
 
   function getEditorHtmlForSave() {
@@ -2137,7 +2171,7 @@ function App() {
                   key={editorKey}
                   ref={editorRef}
                   className={`messyContent ${isMergedWorkflowView ? 'mergedViewContent' : ''}`}
-                  contentEditable={canEditEditor}
+                  contentEditable={!isMergedWorkflowView && canEditEditor}
                   suppressContentEditableWarning
                   onInput={syncEditorContent}
                   onMouseDown={handleEditorMouseDown}
