@@ -217,9 +217,11 @@ function saveCustomers(customers) {
 
 function openCustomerDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(CUSTOMER_DB_NAME, 1);
+    const request = indexedDB.open(CUSTOMER_DB_NAME, 2);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(CUSTOMER_DB_STORE);
+      if (!request.result.objectStoreNames.contains(CUSTOMER_DB_STORE)) {
+        request.result.createObjectStore(CUSTOMER_DB_STORE);
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
