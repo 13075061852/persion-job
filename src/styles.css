@@ -2679,6 +2679,106 @@ button {
   max-width: none;
 }
 
+.attachmentExcelPreview {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f0f2f5;
+}
+
+.excelSheetTabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0;
+  padding: 6px 8px 0;
+  background: #e0e2e6;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.excelSheetTabs::-webkit-scrollbar {
+  height: 3px;
+}
+
+.excelSheetTabs::-webkit-scrollbar-thumb {
+  background: #999999;
+  border-radius: 999px;
+}
+
+.excelSheetTab {
+  height: 30px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  color: #555555;
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.excelSheetTab + .excelSheetTab {
+  margin-left: -1px;
+}
+
+.excelSheetTab:hover {
+  background: rgba(255, 255, 255, 0.78);
+  color: #222222;
+}
+
+.excelSheetTab.active {
+  color: #111111;
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.excelTableWrapper {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 24px;
+  overflow: auto;
+  background: #ffffff;
+}
+
+.excelTableWrapper table {
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #222222;
+}
+
+.excelTableWrapper td,
+.excelTableWrapper th {
+  min-width: 64px;
+  padding: 6px 10px;
+  border: 1px solid #d4d6d9;
+  vertical-align: middle;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.excelTableWrapper th {
+  color: #111111;
+  background: #f2f3f5;
+  font-weight: 780;
+}
+
+.excelTableWrapper tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
+.excelTableWrapper tr:hover td {
+  background: #eef6ff;
+}
+
 @media (max-width: 1540px) {
   .profileMetaGrid,
   .detailFieldGrid,

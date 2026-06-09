@@ -1795,6 +1795,11 @@ function App() {
         return;
       }
 
+      if (kind === 'excel') {
+        setAttachmentPreview({ name, type, size, url, kind, status: 'ready', excelBuffer: arrayBuffer });
+        return;
+      }
+
       setAttachmentPreview({ name, type, size, url, kind, status: 'unsupported' });
     } catch (error) {
       setAttachmentPreview({ name, type, size, url, kind, status: 'error', message: error instanceof Error ? error.message : '预览失败' });
@@ -3132,6 +3137,9 @@ function ImportBackupDialog({ stats, onCancel, onOverwrite, onAppend }) {
 function AttachmentPreviewDialog({ preview, onClose }) {
   const downloadName = preview.name || '附件';
   const wordPreviewRef = useRef(null);
+  const excelPreviewRef = useRef(null);
+  const [excelSheets, setExcelSheets] = useState([]);
+  const [excelActiveSheet, setExcelActiveSheet] = useState('');
 
   useEffect(() => {
     if (preview.status !== 'ready' || preview.kind !== 'word' || !preview.docxBuffer || !wordPreviewRef.current) return;
@@ -3163,6 +3171,38 @@ function AttachmentPreviewDialog({ preview, onClose }) {
     };
   }, [preview.docxBuffer, preview.kind, preview.status]);
 
+  useEffect(() => {
+    if (preview.status !== 'ready' || preview.kind !== 'excel' || !preview.excelBuffer) return;
+
+    let canceled = false;
+
+    import('xlsx')
+      .then((XLSX) => {
+        if (canceled) return;
+        const workbook = XLSX.read(new Uint8Array(preview.excelBuffer), { type: 'array' });
+        const sheets = workbook.SheetNames.map((name) => ({
+          name,
+          html: XLSX.utils.sheet_to_html(workbook.Sheets[name], { id: '', editable: false }),
+        }));
+        if (!canceled) {
+          setExcelSheets(sheets);
+          setExcelActiveSheet((current) => current || workbook.SheetNames[0] || '');
+        }
+      })
+      .catch((error) => {
+        if (!canceled) {
+          setExcelSheets([]);
+          setExcelActiveSheet('');
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [preview.excelBuffer, preview.kind, preview.status]);
+
+  const activeExcelHtml = excelSheets.find((sheet) => sheet.name === excelActiveSheet)?.html ?? '';
+
   return (
     <div className="confirmOverlay attachmentPreviewOverlay" role="presentation" onMouseDown={onClose}>
       <div className={`attachmentPreviewDialog ${preview.status === 'unsupported' ? 'compactPreviewDialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="attachmentPreviewTitle" onMouseDown={(event) => event.stopPropagation()}>
@@ -3184,6 +3224,29 @@ function AttachmentPreviewDialog({ preview, onClose }) {
           )}
           {preview.status === 'ready' && preview.kind === 'word' && (
             <div className="attachmentWordPreview" ref={wordPreviewRef} />
+          )}
+          {preview.status === 'ready' && preview.kind === 'excel' && (
+            <div className="attachmentExcelPreview">
+              {excelSheets.length > 1 && (
+                <div className="excelSheetTabs">
+                  {excelSheets.map((sheet) => (
+                    <button
+                      key={sheet.name}
+                      type="button"
+                      className={`excelSheetTab ${sheet.name === excelActiveSheet ? 'active' : ''}`}
+                      onClick={() => setExcelActiveSheet(sheet.name)}
+                    >
+                      {sheet.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div
+                className="excelTableWrapper"
+                ref={excelPreviewRef}
+                dangerouslySetInnerHTML={{ __html: activeExcelHtml }}
+              />
+            </div>
           )}
         </div>
       </div>
