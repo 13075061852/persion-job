@@ -59,6 +59,7 @@ const EDITOR_TEXT_COLORS = ['#111111', '#dc2626', '#2563eb', '#16a34a', '#ca8a04
 const EDITOR_BACKGROUND_COLORS = ['#fff7ad', '#fee2e2', '#dbeafe', '#dcfce7', '#f3e8ff', '#ffffff'];
 const DEFAULT_EDITOR_TEXT_COLOR = EDITOR_TEXT_COLORS[0];
 const DEFAULT_EDITOR_BACKGROUND_COLOR = EDITOR_BACKGROUND_COLORS[5];
+const EDITOR_ATTACHMENT_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const EDITOR_IMAGE_MIN_WIDTH = 80;
 const EDITOR_IMAGE_WHEEL_STEP = 32;
 const DEFAULT_LEFT_PANEL_WIDTH = 360;
@@ -342,6 +343,32 @@ function getImportStats(importedCustomers, currentCustomers) {
   };
 }
 
+function formatFileSize(size = 0) {
+  if (!Number.isFinite(size) || size <= 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function getAttachmentKind(fileName = '', fileType = '') {
+  const lowerName = fileName.toLowerCase();
+  const lowerType = fileType.toLowerCase();
+  if (lowerType.includes('pdf') || lowerName.endsWith('.pdf')) return 'pdf';
+  if (lowerType.includes('word') || lowerName.endsWith('.docx') || lowerName.endsWith('.doc')) return 'word';
+  if (lowerType.includes('excel') || lowerType.includes('spreadsheet') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) return 'excel';
+  return 'file';
+}
+
+function dataUrlToArrayBuffer(dataUrl = '') {
+  const base64 = dataUrl.split(',')[1] ?? '';
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
 function escapeHtml(value = '') {
   return value
     .replaceAll('&', '&amp;')
@@ -461,12 +488,14 @@ function App() {
   const [activeResizer, setActiveResizer] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
   const [pendingImport, setPendingImport] = useState(null);
+  const [attachmentPreview, setAttachmentPreview] = useState(null);
   const [activeEditorTextColor, setActiveEditorTextColor] = useState(DEFAULT_EDITOR_TEXT_COLOR);
   const [activeEditorBackgroundColor, setActiveEditorBackgroundColor] = useState(DEFAULT_EDITOR_BACKGROUND_COLOR);
   const boardRef = useRef(null);
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
   const imageInputRef = useRef(null);
+  const attachmentInputRef = useRef(null);
   const backupInputRef = useRef(null);
   const imageDragStateRef = useRef(null);
   const imageDragGhostRef = useRef(null);
@@ -546,6 +575,7 @@ function App() {
     if (!editorRef.current || isMergedWorkflowView) return;
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
+    prepareEditorAttachments();
     editorSelectionRef.current = null;
   }, [editorKey, isMergedWorkflowView]);
 
@@ -553,6 +583,7 @@ function App() {
     if (!editorRef.current || !isMergedWorkflowView) return;
     editorRef.current.innerHTML = toEditorHtml(editorContent);
     prepareEditorImages();
+    prepareEditorAttachments();
     editorSelectionRef.current = null;
   }, [editorKey, isMergedWorkflowView]);
 
@@ -1110,6 +1141,9 @@ function App() {
     clonedEditor.querySelectorAll('.editorImageFrame.active').forEach((element) => {
       element.classList.remove('active');
     });
+    clonedEditor.querySelectorAll('.editorAttachmentFrame.active').forEach((element) => {
+      element.classList.remove('active');
+    });
     return clonedEditor.innerHTML;
   }
 
@@ -1136,6 +1170,28 @@ function App() {
     selection.removeAllRanges();
     selection.addRange(range);
     return true;
+  }
+
+  function ensureEditorInsertionRange() {
+    if (!editorRef.current) return null;
+
+    restoreEditorSelection();
+    const selection = window.getSelection();
+    if (selection?.rangeCount) {
+      const range = selection.getRangeAt(0);
+      if (editorRef.current.contains(range.commonAncestorContainer)) {
+        return range;
+      }
+    }
+
+    editorRef.current.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editorRef.current);
+    range.collapse(false);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editorSelectionRef.current = range.cloneRange();
+    return range;
   }
 
   function applyEditorCommand(command, value = null) {
@@ -1178,6 +1234,17 @@ function App() {
     });
   }
 
+  function clearActiveEditorAttachment() {
+    editorRef.current?.querySelectorAll('.editorAttachmentFrame.active').forEach((element) => {
+      element.classList.remove('active');
+    });
+  }
+
+  function clearActiveEditorObjects() {
+    clearActiveEditorImage();
+    clearActiveEditorAttachment();
+  }
+
   function makeImageNonDraggable(image) {
     image.draggable = false;
     image.setAttribute('draggable', 'false');
@@ -1187,6 +1254,15 @@ function App() {
     frame.contentEditable = 'false';
     frame.draggable = false;
     frame.setAttribute('draggable', 'false');
+  }
+
+  function prepareAttachmentFrame(frame) {
+    frame.contentEditable = 'false';
+    frame.draggable = false;
+    frame.setAttribute('draggable', 'false');
+    const kind = getAttachmentKind(frame.dataset.attachmentName ?? '', frame.dataset.attachmentType ?? '');
+    frame.classList.remove('attachmentPdf', 'attachmentWord', 'attachmentExcel', 'attachmentFile');
+    frame.classList.add(`attachment${kind.charAt(0).toUpperCase()}${kind.slice(1)}`);
   }
 
   function prepareEditorImages() {
@@ -1210,6 +1286,13 @@ function App() {
       image.parentNode?.insertBefore(frame, image);
       frame.appendChild(image);
       frame.appendChild(handle);
+    });
+  }
+
+  function prepareEditorAttachments() {
+    if (!editorRef.current) return;
+    editorRef.current.querySelectorAll('.editorAttachmentFrame').forEach((frame) => {
+      prepareAttachmentFrame(frame);
     });
   }
 
@@ -1336,6 +1419,104 @@ function App() {
     imageInputRef.current?.click();
   }
 
+  function addEditorAttachment() {
+    attachmentInputRef.current?.click();
+  }
+
+  function createAttachmentFrame({ name, type, size, url }) {
+    const kind = getAttachmentKind(name, type);
+    const frame = document.createElement('span');
+    frame.className = `editorAttachmentFrame attachment${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
+    frame.dataset.attachmentName = name;
+    frame.dataset.attachmentType = type;
+    frame.dataset.attachmentSize = String(size);
+    frame.dataset.attachmentUrl = url;
+    prepareAttachmentFrame(frame);
+
+    const label = kind === 'pdf' ? 'PDF' : kind === 'word' ? 'Word' : kind === 'excel' ? 'Excel' : '文件';
+    frame.innerHTML = [
+      `<span class="editorAttachmentIcon">${escapeHtml(label)}</span>`,
+      '<span class="editorAttachmentText">',
+      `<strong>${escapeHtml(name)}</strong>`,
+      `<small>${escapeHtml(formatFileSize(size))}</small>`,
+      '</span>',
+    ].join('');
+    return frame;
+  }
+
+  function insertEditorAttachment(file, url) {
+    if (!editorRef.current) return;
+    const range = ensureEditorInsertionRange();
+    if (!range) return;
+    const selection = window.getSelection();
+
+    const frame = createAttachmentFrame({
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      url,
+    });
+
+    range.deleteContents();
+    range.insertNode(frame);
+    range.setStartAfter(frame);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    clearActiveEditorObjects();
+    frame.classList.add('active');
+    syncEditorContent();
+    saveEditorSelection();
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+      reader.onerror = () => reject(new Error('读取附件失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleEditorAttachmentSelected(event) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      const url = await readFileAsDataUrl(file);
+      if (url) insertEditorAttachment(file, url);
+    }
+  }
+
+  async function openEditorAttachmentPreview(frame) {
+    const name = frame.dataset.attachmentName ?? '附件';
+    const type = frame.dataset.attachmentType ?? '';
+    const size = Number(frame.dataset.attachmentSize ?? 0);
+    const url = frame.dataset.attachmentUrl ?? '';
+    const kind = getAttachmentKind(name, type);
+    setAttachmentPreview({ name, type, size, url, kind, status: 'loading' });
+
+    try {
+      if (kind === 'pdf') {
+        setAttachmentPreview({ name, type, size, url, kind, status: 'ready' });
+        return;
+      }
+
+      const arrayBuffer = dataUrlToArrayBuffer(url);
+      if (kind === 'word' && name.toLowerCase().endsWith('.docx')) {
+        const mammoth = await import('mammoth/mammoth.browser');
+        const result = await mammoth.convertToHtml({ arrayBuffer });
+        setAttachmentPreview({ name, type, size, url, kind, status: 'ready', html: result.value || '<p>没有可预览内容</p>' });
+        return;
+      }
+
+      setAttachmentPreview({ name, type, size, url, kind, status: 'unsupported' });
+    } catch (error) {
+      setAttachmentPreview({ name, type, size, url, kind, status: 'error', message: error instanceof Error ? error.message : '预览失败' });
+    }
+  }
+
   function getActiveEditorImageFrame() {
     const frame = editorRef.current?.querySelector('.editorImageFrame.active');
     return frame instanceof HTMLElement ? frame : null;
@@ -1361,9 +1542,10 @@ function App() {
   }
 
   function insertEditorImage(src) {
-    if (!restoreEditorSelection() || !editorRef.current) return;
+    if (!editorRef.current) return;
+    const range = ensureEditorInsertionRange();
+    if (!range) return;
     const selection = window.getSelection();
-    if (!selection?.rangeCount) return;
 
     const frame = document.createElement('span');
     frame.className = 'editorImageFrame';
@@ -1381,13 +1563,12 @@ function App() {
     frame.appendChild(image);
     frame.appendChild(handle);
 
-    const range = selection.getRangeAt(0);
     range.deleteContents();
     range.insertNode(frame);
     range.setStartAfter(frame);
     range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
     clearActiveEditorImage();
     frame.classList.add('active');
     syncEditorContent();
@@ -1408,13 +1589,20 @@ function App() {
   }
 
   function handleEditorClick(event) {
+    const attachmentFrame = event.target.closest?.('.editorAttachmentFrame');
+    if (attachmentFrame && editorRef.current?.contains(attachmentFrame)) {
+      clearActiveEditorObjects();
+      attachmentFrame.classList.add('active');
+      return;
+    }
+
     const imageFrame = event.target.closest?.('.editorImageFrame');
     if (imageFrame && editorRef.current?.contains(imageFrame)) {
-      clearActiveEditorImage();
+      clearActiveEditorObjects();
       imageFrame.classList.add('active');
       return;
     }
-    clearActiveEditorImage();
+    clearActiveEditorObjects();
 
     const link = event.target.closest?.('a');
     if (!link || !editorRef.current?.contains(link)) return;
@@ -1422,6 +1610,13 @@ function App() {
     if (!href) return;
     event.preventDefault();
     window.open(normalizeEditorUrl(href), '_blank', 'noopener,noreferrer');
+  }
+
+  function handleEditorDoubleClick(event) {
+    const attachmentFrame = event.target.closest?.('.editorAttachmentFrame');
+    if (!attachmentFrame || !editorRef.current?.contains(attachmentFrame)) return;
+    event.preventDefault();
+    openEditorAttachmentPreview(attachmentFrame);
   }
 
   function getEditorDropRange(clientX, clientY) {
@@ -1685,11 +1880,11 @@ function App() {
   function handleEditorKeyDown(event) {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
 
-    const activeImage = editorRef.current?.querySelector('.editorImageFrame.active');
-    if (!activeImage) return;
+    const activeObject = editorRef.current?.querySelector('.editorImageFrame.active, .editorAttachmentFrame.active');
+    if (!activeObject) return;
 
     event.preventDefault();
-    activeImage.remove();
+    activeObject.remove();
     syncEditorContent();
     editorRef.current?.focus();
   }
@@ -1915,6 +2110,9 @@ function App() {
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={addEditorImage} title="插入图片">
                     <Image size={16} />
                   </button>
+                  <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={addEditorAttachment} title="上传附件">
+                    <FileText size={16} />
+                  </button>
                   <button type="button" className="toolbarIconButton" onMouseDown={(event) => event.preventDefault()} onClick={() => alignEditorImage('left')} title="图片左对齐">
                     <AlignLeft size={16} />
                   </button>
@@ -1931,6 +2129,14 @@ function App() {
                     hidden
                     onChange={handleEditorImageSelected}
                   />
+                  <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    accept={EDITOR_ATTACHMENT_ACCEPT}
+                    multiple
+                    hidden
+                    onChange={handleEditorAttachmentSelected}
+                  />
                 </div>
                 <div
                   key={editorKey}
@@ -1945,6 +2151,7 @@ function App() {
                   onKeyUp={saveEditorSelection}
                   onFocus={saveEditorSelection}
                   onClick={handleEditorClick}
+                  onDoubleClick={handleEditorDoubleClick}
                   onWheel={handleEditorWheel}
                   data-placeholder={isMergedWorkflowView
                     ? '请选择至少一个工作流进行合并查看。'
@@ -2224,6 +2431,12 @@ function App() {
           onCancel={() => setPendingImport(null)}
           onOverwrite={() => applyImportedBackup(pendingImport.payload, 'overwrite', pendingImport.importedCustomers)}
           onAppend={() => applyImportedBackup(pendingImport.payload, 'append', pendingImport.importedCustomers)}
+        />
+      )}
+      {attachmentPreview && (
+        <AttachmentPreviewDialog
+          preview={attachmentPreview}
+          onClose={() => setAttachmentPreview(null)}
         />
       )}
     </main>
@@ -2598,6 +2811,37 @@ function ImportBackupDialog({ stats, onCancel, onOverwrite, onAppend }) {
           <button className="confirmCancel" onClick={onCancel}>取消</button>
           <button className="confirmCancel" onClick={onAppend} disabled={stats.newCount === 0}>追加新增数据</button>
           <button className="confirmDanger" onClick={onOverwrite}>覆盖当前数据</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AttachmentPreviewDialog({ preview, onClose }) {
+  const downloadName = preview.name || '附件';
+
+  return (
+    <div className="confirmOverlay attachmentPreviewOverlay" role="presentation" onMouseDown={onClose}>
+      <div className={`attachmentPreviewDialog ${preview.status === 'unsupported' ? 'compactPreviewDialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby="attachmentPreviewTitle" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="attachmentPreviewHeader">
+          <div>
+            <h3 id="attachmentPreviewTitle">{preview.name}</h3>
+          </div>
+          <div className="attachmentPreviewActions">
+            <a href={preview.url} download={downloadName}>下载</a>
+            <button type="button" onClick={onClose}>关闭</button>
+          </div>
+        </div>
+        <div className="attachmentPreviewBody">
+          {preview.status === 'loading' && <div className="attachmentPreviewEmpty">正在加载预览</div>}
+          {preview.status === 'error' && <div className="attachmentPreviewEmpty">{preview.message || '预览失败'}</div>}
+          {preview.status === 'unsupported' && <div className="attachmentPreviewEmpty">当前格式暂不支持网页预览，请下载后查看。</div>}
+          {preview.status === 'ready' && preview.kind === 'pdf' && (
+            <iframe src={preview.url} title={preview.name} />
+          )}
+          {preview.status === 'ready' && preview.kind === 'word' && (
+            <div className="attachmentWordPreview" dangerouslySetInnerHTML={{ __html: preview.html }} />
+          )}
         </div>
       </div>
     </div>
