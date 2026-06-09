@@ -198,18 +198,30 @@ function readInitialCustomers() {
 }
 
 function stripAttachmentDataForLocalStorage(customers) {
-  // Remove base64 attachment data to reduce size for localStorage fallback.
-  // The full data is preserved in IndexedDB.
+  // Remove large attachment payloads from the localStorage fallback only.
+  // Inline editor images must keep their data URLs so they survive refreshes.
+  const stripDocumentContent = (content) => {
+    if (!content) return content;
+    if (typeof document === 'undefined') {
+      return content.replace(
+        /(data-attachment-url=(["']))data:[\s\S]*?\2/g,
+        '$1[附件-大数据已压缩]$2'
+      );
+    }
+
+    const container = document.createElement('div');
+    container.innerHTML = toEditorHtml(content);
+    container.querySelectorAll('.editorAttachmentFrame[data-attachment-url]').forEach((frame) => {
+      frame.setAttribute('data-attachment-url', '[附件-大数据已压缩]');
+    });
+    return container.innerHTML;
+  };
+
   return customers.map((customer) => ({
     ...customer,
     timeline: (customer.timeline ?? []).map((item) => {
       if (!item.documentContent) return item;
-      // Remove data URLs from documentContent to save space
-      const stripped = item.documentContent.replace(
-        /data:[^"'\s>)]+/g,
-        '[附件-大数据已压缩]'
-      );
-      return { ...item, documentContent: stripped };
+      return { ...item, documentContent: stripDocumentContent(item.documentContent) };
     }),
   }));
 }
@@ -597,6 +609,7 @@ function App() {
   const [attachmentPreview, setAttachmentPreview] = useState(null);
   const [activeEditorTextColor, setActiveEditorTextColor] = useState(DEFAULT_EDITOR_TEXT_COLOR);
   const [activeEditorBackgroundColor, setActiveEditorBackgroundColor] = useState(DEFAULT_EDITOR_BACKGROUND_COLOR);
+  const [editorHydrationVersion, setEditorHydrationVersion] = useState(0);
   const boardRef = useRef(null);
   const editorRef = useRef(null);
   const editorSelectionRef = useRef(null);
@@ -694,7 +707,7 @@ function App() {
     prepareEditorImages();
     prepareEditorAttachments();
     editorSelectionRef.current = null;
-  }, [editorKey, isMergedWorkflowView]);
+  }, [editorKey, isMergedWorkflowView, editorHydrationVersion]);
 
   useEffect(() => {
     if (!editorRef.current || !isMergedWorkflowView) return;
@@ -702,7 +715,7 @@ function App() {
     prepareEditorImages();
     prepareEditorAttachments();
     editorSelectionRef.current = null;
-  }, [editorKey, isMergedWorkflowView, mergedWorkflowMetaKey]);
+  }, [editorKey, isMergedWorkflowView, mergedWorkflowMetaKey, editorHydrationVersion]);
 
   useEffect(() => () => {
     removeCustomImageDragListeners();
@@ -754,6 +767,8 @@ function App() {
           return;
         }
         setCustomers(storedCustomers);
+        customersRef.current = storedCustomers;
+        setEditorHydrationVersion((version) => version + 1);
         if (!storedCustomers.some((customer) => customer.id === selectedId)) {
           setSelectedId(storedCustomers[0]?.id ?? '');
           setSelectedWorkflowId('');
@@ -877,13 +892,9 @@ function App() {
 
   function commitCustomersFromUpdater(updater) {
     userModifiedSinceLoad.current = true;
-    let nextCustomers = customersRef.current;
-    setCustomers((currentCustomers) => {
-      nextCustomers = updater(currentCustomers);
-      customersRef.current = nextCustomers;
-      return nextCustomers;
-    });
-    // Save outside the setState updater to avoid React anti-pattern
+    const nextCustomers = updater(customersRef.current);
+    customersRef.current = nextCustomers;
+    setCustomers(nextCustomers);
     saveCustomers(nextCustomers);
     return nextCustomers;
   }
